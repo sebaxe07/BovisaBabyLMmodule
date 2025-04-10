@@ -1,0 +1,6 @@
+# requirements.txt
+PyRPlidar
+pyzmq
+numpy
+matplotlib
+pySerial
