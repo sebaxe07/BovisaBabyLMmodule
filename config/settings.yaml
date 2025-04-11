@@ -3,11 +3,21 @@ lidar:
   port: "/dev/ttyUSB0"
   safety_distance: 1.5 # meters
   update_rate: 10 # Hz
+  scan_interval: 0.1 # seconds
 
 arduino:
-  port: "/dev/ttyACM0"
-  baudrate: 115200
+  port: "/dev/ttyACM0" 
+  bus_number: 1  # I2C bus number for hardware mode
+  arduino_address: 0x08  # I2C address for hardware mode
+  mock_mode: true
+  mock_settings:
+    battery_initial: 12.0  # volts
+    battery_drain_rate: 0.0001  # volts/update
+    motor_forward_speed: 75  # percentage
+    motor_reverse_speed: -75  # percentage
+    motor_turn_speed: 50  # percentage
 
 robot:
   max_speed: 0.5 # m/s
   rotation_speed: 0.3 # rad/s
+    

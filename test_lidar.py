@@ -27,10 +27,10 @@ if __name__ == "__main__":
     )
     lidar_process.start()
     
-    # Start visualization in main process
-    try:
-        visualizer = LidarVisualizer(config['lidar'])
-        visualizer.run()
-    finally:
-        lidar_process.terminate()
-        lidar_process.join()
+    # # Start visualization in main process
+    # try:
+    #     visualizer = LidarVisualizer(config['lidar'])
+    #     visualizer.run()
+    # finally:
+    #     lidar_process.terminate()
+    #     lidar_process.join()

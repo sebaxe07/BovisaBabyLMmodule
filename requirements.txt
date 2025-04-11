@@ -4,3 +4,6 @@ pyzmq
 numpy
 matplotlib
 pySerial
+flask
+scikit-learn
+smbus
