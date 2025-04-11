@@ -15,7 +15,7 @@ class LidarProcessor:
         self.obstacles = []
         self._setup_communication()
         self._running = Event()
-        self._thread = None
+        self._thread = None 
 
     def _setup_communication(self):
         context = zmq.Context()
@@ -33,6 +33,7 @@ class LidarProcessor:
         # Basic obstacle detection
         for xi, yi, dist in zip(x, y, distances):
             if dist < self.config['safety_distance']:
+                print(f"Obstacle detected at ({xi}, {yi}) with distance {dist}")
                 obstacles.append({
                     'x': xi,
                     'y': yi,
@@ -89,12 +90,19 @@ class LidarProcessor:
                             'type': 'obstacles',
                             'data': obstacles
                         })
+                        self.publisher.send_json({
+                            'type': 'scan',
+                            'data': {
+                                'angles': current_scan['angles'],
+                                'distances': current_scan['distances']
+                            }
+                        })
                         current_scan = {'angles': [], 'distances': []}
                     
                 if scan.distance > 0:
                     current_scan['angles'].append(scan.angle)
                     current_scan['distances'].append(scan.distance/1000.0)  # Convert to meters
-
+                    
         except Exception as e:
             logging.error(f"LIDAR error: {e}")
         finally:
