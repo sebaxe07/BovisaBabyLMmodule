@@ -150,53 +150,65 @@ class LidarProcessor:
 
     def _scan_loop(self):
         lidar = PyRPlidar()
-        try:
-            log_info("LIDAR","Connecting to LIDAR...")
-            log_info("LIDAR", f"LIDAR Port: {self.config['port']}")
-            lidar.connect(port=self.config['port'], 
-                         baudrate=115200, timeout=3)
-            lidar.set_motor_pwm(500)
-            time.sleep(2)
+        attempt = 0
+        max_attempts = 3
+        
+        while attempt < max_attempts and self._running.is_set():
+            try:
+                attempt += 1
+                log_info("LIDAR","Connecting to LIDAR...")
+                log_info("LIDAR", f"LIDAR Port: {self.config['port']}")
+                lidar.connect(port=self.config['port'], 
+                            baudrate=115200, timeout=3)
+                lidar.set_motor_pwm(500)
+                time.sleep(2)
 
-            scan_generator = lidar.start_scan_express(mode=2)
-            current_scan = {'angles': [], 'distances': []}
+                scan_generator = lidar.start_scan_express(mode=2)
+                current_scan = {'angles': [], 'distances': []}
 
-            for scan in scan_generator():
-                if not self._running.is_set():
-                    break
+                for scan in scan_generator():
+                    if not self._running.is_set():
+                        break
 
-                if scan.start_flag:
-                    if current_scan['angles']:
-                        # Process complete scan
-                        obstacles = self._process_scan(
-                            current_scan['angles'],
-                            current_scan['distances']
-                        )
-                        self.publisher.send_json({
-                            'type': 'obstacles',
-                            'data': obstacles
-                        })
-                        self.publisher.send_json({
-                            'type': 'scan',
-                            'data': {
-                                'angles': current_scan['angles'],
-                                'distances': current_scan['distances']
-                            }
-                        })
-                        current_scan = {'angles': [], 'distances': []}
-                    
-                if scan.distance > 0:
-                    current_scan['angles'].append(scan.angle)
-                    current_scan['distances'].append(scan.distance/1000.0)  # Convert to meters
-            
-            log_info("LIDAR", "Scan loop stopped")
-        except Exception as e:
-            log_error("LIDAR", f"Error: {e}")
-        finally:
-            log_info("LIDAR", "Disconnecting LIDAR")
-            lidar.stop()
-            lidar.set_motor_pwm(0)
-            lidar.disconnect()
+                    if scan.start_flag:
+                        if current_scan['angles']:
+                            # Process complete scan
+                            obstacles = self._process_scan(
+                                current_scan['angles'],
+                                current_scan['distances']
+                            )
+                            self.publisher.send_json({
+                                'type': 'obstacles',
+                                'data': obstacles
+                            })
+                            self.publisher.send_json({
+                                'type': 'scan',
+                                'data': {
+                                    'angles': current_scan['angles'],
+                                    'distances': current_scan['distances']
+                                }
+                            })
+                            current_scan = {'angles': [], 'distances': []}
+                        
+                    if scan.distance > 0:
+                        current_scan['angles'].append(scan.angle)
+                        current_scan['distances'].append(scan.distance/1000.0)  # Convert to meters
+                
+                log_info("LIDAR", "Scan loop stopped")
+            except Exception as e:
+                log_error("LIDAR", f"Error: {e}")
+                time.sleep(1)  # Wait before retrying
+            finally:
+                try:
+                    log_info("LIDAR", "Disconnecting LIDAR")
+                    lidar.stop()
+                    lidar.set_motor_pwm(0)
+                    time.sleep(0.5)
+                    lidar.disconnect()
+                    # Force an additional wait after disconnect
+                    time.sleep(1)
+                except Exception as e:
+                    log_error("LIDAR", f"Error during cleanup: {e}")
 
     def start(self):
         self._running.set()
