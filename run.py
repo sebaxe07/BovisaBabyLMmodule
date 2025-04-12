@@ -14,7 +14,7 @@ def load_config():
 def run_visualization(config):
     log_info("MAIN", "Starting visualization...")
     from utils.flask_visualization import app
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
 def run_controller(config):
     log_info("MAIN", "Starting controller...")
@@ -33,8 +33,8 @@ if __name__ == "__main__":
     
     # Create processes
     processes = [
-        Process(target=run_visualization, args=(config,)),
-        Process(target=run_controller, args=(config,))
+        Process(target=run_controller, args=(config,)),
+        Process(target=run_visualization, args=(config,))
     ]
     
     # Start all processes

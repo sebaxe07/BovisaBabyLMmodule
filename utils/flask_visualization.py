@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, jsonify, request
 import zmq
 from threading import Thread, Lock
 import time
@@ -6,6 +6,7 @@ import json
 import numpy as np
 import logging
 from utils.colored_logger import log_info, log_error, log_debug
+import threading
 
 # Suppress Flask's default logger
 log = logging.getLogger('werkzeug')
@@ -24,6 +25,15 @@ scan_data = {
 }
 data_lock = Lock()
 
+command_publisher = None
+def setup_command_publisher():
+    global command_publisher
+    context = zmq.Context()
+    command_publisher = context.socket(zmq.PUB)
+    command_publisher.bind("tcp://*:5556")  # Different port for commands
+    log_info("FLASK", "Command publisher initialized on port 5556")
+
+
 # All-in-one HTML with robust visualization
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -41,18 +51,106 @@ HTML_TEMPLATE = """
             border-radius: 4px;
             font-family: monospace;
         }
+        #controls {
+            margin: 15px 0;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .control-button {
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .start-button { background: #4CAF50; color: white; }
+        .stop-button { background: #f44336; color: white; }
+        .sim-button { background: #2196F3; color: white; }
+        .control-button:hover { opacity: 0.8; }
+        .control-button:disabled { opacity: 0.5; cursor: not-allowed; }
     </style>
 </head>
 <body>
     <h1>LIDAR Real-Time Visualization</h1>
     <div id="status">Status: Waiting for initial data...</div>
+    
+    <!-- Control Panel -->
+    <div id="controls">
+        <button id="startTracking" class="control-button start-button">Start Tracking</button>
+        <button id="stopTracking" class="control-button stop-button">Stop Robot</button>
+        <button id="startSearch" class="control-button sim-button">Start Search</button>
+        <span id="current-mode" style="margin-left: 20px; font-weight: bold;">Mode: IDLE</span>
+    </div>
+
+    <div id="simulation-controls" style="margin: 15px 0; padding: 15px; background: #f5f5f5; border-radius: 4px;">
+        <h3>Mock Human Position Control</h3>
+        <div style="margin: 15px 0;">
+            <label for="x-position">X Position: <span id="x-value">-5.0</span></label>
+            <input type="range" id="x-position" min="-10" max="10" step="0.1" value="-5.0" style="width: 80%;">
+        </div>
+        <div style="margin: 15px 0;">
+            <label for="distance">Distance: <span id="distance-value">2.0</span></label>
+            <input type="range" id="distance" min="0.5" max="10" step="0.1" value="2.0" style="width: 80%;">
+        </div>
+        <button id="updatePosition" class="control-button sim-button">Update Human Position</button>
+    </div>
+    
     <div id="plot"></div>
 
     <script>
         // Initialize plot
         const plotDiv = document.getElementById('plot');
         const statusDiv = document.getElementById('status');
+        const currentModeSpan = document.getElementById('current-mode');
         
+        document.getElementById('x-position').addEventListener('input', function() {
+                document.getElementById('x-value').textContent = this.value;
+        });
+        
+        document.getElementById('distance').addEventListener('input', function() {
+            document.getElementById('distance-value').textContent = this.value;
+        });
+        
+        document.getElementById('updatePosition').addEventListener('click', function() {
+            const xPosition = document.getElementById('x-position').value;
+            const distance = document.getElementById('distance').value;
+            
+            fetch(`/control/update_human_position?x=${xPosition}&distance=${distance}`)
+                .then(response => response.json())
+                .then(data => {
+                    statusDiv.innerHTML += `<br>Updated human position: x=${xPosition}, distance=${distance}`;
+                });
+        });
+
+        // Control button handlers
+        document.getElementById('startTracking').addEventListener('click', () => {
+            fetch('/control/tracking')
+                .then(response => response.json())
+                .then(data => {
+                    currentModeSpan.textContent = `Mode: ${data.mode}`;
+                    statusDiv.innerHTML += `<br>Command sent: Start tracking`;
+                });
+        });
+        
+        document.getElementById('stopTracking').addEventListener('click', () => {
+            fetch('/control/stop')
+                .then(response => response.json())
+                .then(data => {
+                    currentModeSpan.textContent = `Mode: ${data.mode}`;
+                    statusDiv.innerHTML += `<br>Command sent: Stop robot`;
+                });
+        });
+        document.getElementById('startSearch').addEventListener('click', () => {
+            fetch('/control/search')
+                .then(response => response.json())
+                .then(data => {
+                    currentModeSpan.textContent = `Mode: ${data.mode}`;
+                    statusDiv.innerHTML += `<br>Command sent: Start search`;
+                });
+        });
+
         // Create safety circle points
         function generateSafetyCircle() {
             console.log("Generating safety circle");
@@ -61,7 +159,7 @@ HTML_TEMPLATE = """
             for (let angle = 0; angle <= 360; angle += 5) {
                 console.log(`Angle: ${angle}`);
                 angles.push(angle);
-                distances.push(1.5);
+                distances.push(1);
             }
             return {angles, distances};
         }
@@ -260,6 +358,62 @@ def get_data():
         # Return current data with debug info
         log(f"Serving data: {len(scan_data['angles'])} points, {len(scan_data['obstacles'])} obstacles")
         return jsonify(scan_data)
+    
+@app.route('/control/tracking')
+def start_tracking():
+    if command_publisher:
+        command_publisher.send_json({
+            'command': 'set_state',
+            'state': 'TRACKING'
+        })
+        log_info("FLASK", "Sent command: Start tracking")
+    return jsonify({'success': True, 'mode': 'TRACKING'})
+
+@app.route('/control/stop')
+def stop_robot():
+    if command_publisher:
+        command_publisher.send_json({
+            'command': 'set_state',
+            'state': 'IDLE'
+        })
+        command_publisher.send_json({
+            'command': 'motor',
+            'action': 'stop'
+        })
+        log_info("FLASK", "Sent command: Stop robot")
+    return jsonify({'success': True, 'mode': 'IDLE'})
+
+@app.route('/control/search')
+def start_search():
+    if command_publisher:
+        command_publisher.send_json({
+            'command': 'set_state',
+            'state': 'SEARCH'
+        })
+        log_info("FLASK", "Sent command: Start search")
+    return jsonify({'success': True, 'mode': 'SEARCH'})
+
+
+@app.route('/control/update_human_position')
+def update_human_position():
+    """Update the mock human's position via ZMQ command"""
+    x = float(request.args.get('x', -5.0))
+    distance = float(request.args.get('distance', 2.0))
+    
+    if command_publisher:
+        command_publisher.send_json({
+            'command': 'UPDATE_HUMAN_POSITION',
+            'x_position': x,
+            'distance': distance
+        })
+        log_info("FLASK", f"Sent human position update: x={x}, distance={distance}")
+    
+    return jsonify({
+        'success': True,
+        'x_position': x,
+        'distance': distance
+    })
+
 
 def zmq_listener():
     context = zmq.Context()
@@ -295,6 +449,7 @@ def initialize():
     zmq_thread = Thread(target=zmq_listener)
     zmq_thread.daemon = True
     zmq_thread.start()
+    setup_command_publisher()
     log_info("FLASK", "ZMQ listener started")
 
 # Initialize when module is imported

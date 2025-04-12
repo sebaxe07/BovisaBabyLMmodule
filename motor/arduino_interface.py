@@ -82,6 +82,8 @@ class ArduinoInterface:
         Commands are represented as integers:
         0 = stop, 1 = forward, 2 = backward, 3 = left, 4 = right
         """
+        log_info("ARDUINO", f"Receiving command: {command}")
+
         if isinstance(command, str):
             command_map = {
                 "stop": 0,
@@ -93,17 +95,18 @@ class ArduinoInterface:
             command = command_map.get(command.lower(), 0)  # Default to stop if invalid
             
         if command not in range(5):  # Validate command range
-            self.logger.warning(f"Invalid command value: {command}. Defaulting to stop.")
+            log_error("ARDUINO", f"Invalid command: {command}. Defaulting to stop.")
             command = 0
             
         if self.mock_mode:
-            self.logger.debug(f"MOCK: Sending command {command}")
+            log_info("ARDUINO", f"Mock mode - setting command to {command}")
             self.mock_state['command'] = command
         else:
             try:
+                log_info("ARDUINO", f"Sending command {command} to Arduino")
                 self.bus.write_byte(self.address, command)
             except Exception as e:
-                self.logger.error(f"Error sending command to Arduino: {e}")
+                log_error("ARDUINO", f"Error sending command to Arduino: {e}")
                 
     def get_sensor_data(self):
         """
