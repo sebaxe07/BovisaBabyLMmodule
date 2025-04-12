@@ -84,6 +84,8 @@ HTML_TEMPLATE = """
         <span id="current-mode" style="margin-left: 20px; font-weight: bold;">Mode: IDLE</span>
     </div>
 
+
+
     <div id="simulation-controls" style="margin: 15px 0; padding: 15px; background: #f5f5f5; border-radius: 4px;">
         <h3>Mock Human Position Control</h3>
         <div style="margin: 15px 0;">
@@ -94,7 +96,6 @@ HTML_TEMPLATE = """
             <label for="distance">Distance: <span id="distance-value">2.0</span></label>
             <input type="range" id="distance" min="0.5" max="10" step="0.1" value="2.0" style="width: 80%;">
         </div>
-        <button id="updatePosition" class="control-button sim-button">Update Human Position</button>
     </div>
     
     <div id="plot"></div>
@@ -105,24 +106,43 @@ HTML_TEMPLATE = """
         const statusDiv = document.getElementById('status');
         const currentModeSpan = document.getElementById('current-mode');
         
+        let updateTimeout = null;
+        const THROTTLE_DELAY = 100; // milliseconds
+
         document.getElementById('x-position').addEventListener('input', function() {
-                document.getElementById('x-value').textContent = this.value;
-        });
-        
-        document.getElementById('distance').addEventListener('input', function() {
-            document.getElementById('distance-value').textContent = this.value;
-        });
-        
-        document.getElementById('updatePosition').addEventListener('click', function() {
-            const xPosition = document.getElementById('x-position').value;
+            const xPosition = this.value;
             const distance = document.getElementById('distance').value;
+            document.getElementById('x-value').textContent = xPosition;
             
-            fetch(`/control/update_human_position?x=${xPosition}&distance=${distance}`)
+            // Throttle the updates
+            clearTimeout(updateTimeout);
+            updateTimeout = setTimeout(() => {
+                updateHumanPosition(xPosition, distance);
+            }, THROTTLE_DELAY);
+        });
+
+        document.getElementById('distance').addEventListener('input', function() {
+            const distance = this.value;
+            const xPosition = document.getElementById('x-position').value;
+            document.getElementById('distance-value').textContent = distance;
+            
+            // Throttle the updates
+            clearTimeout(updateTimeout);
+            updateTimeout = setTimeout(() => {
+                updateHumanPosition(xPosition, distance);
+            }, THROTTLE_DELAY);
+        });
+
+        // Create a function to handle the update
+        function updateHumanPosition(x, distance) {
+            fetch(`/control/update_human_position?x=${x}&distance=${distance}`)
                 .then(response => response.json())
                 .then(data => {
-                    statusDiv.innerHTML += `<br>Updated human position: x=${xPosition}, distance=${distance}`;
-                });
-        });
+                    // Optional: Update status only for significant changes to avoid flooding
+                    // statusDiv.innerHTML = `Position: x=${x}, distance=${distance}`;
+                })
+                .catch(error => console.error('Error updating position:', error));
+        }
 
         // Control button handlers
         document.getElementById('startTracking').addEventListener('click', () => {

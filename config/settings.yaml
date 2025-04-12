@@ -24,3 +24,4 @@ robot:
 camera:
   port: "/dev/video0"
   tolerance: 0.1 # meters
+  close_distance: 1 # meters

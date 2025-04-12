@@ -22,6 +22,7 @@ class MainController:
         self._setup_camera()
         self.current_state = "IDLE"
         self.target_direction = None
+        self.target_distance = None
         self.last_obstacles = []
         log_info("CONTROLLER", "Initialization complete")
 
@@ -105,31 +106,58 @@ class MainController:
             return "stop"
 
     def process_messages(self):
-        """Main loop to process incoming messages"""
-        log_info("CONTROLLER", "Starting message processing loop")
+        last_command_time = 0
+        last_direction = None
+        throttle_interval = 0.2  # seconds between commands
+        
         while True:
-
-            # Check for camera data
             try:
                 camera_msg = self.camera_subscriber.recv_json(zmq.NOBLOCK)
-                log_info("CONTROLLER", f"Received camera data: {camera_msg['type']}")
+                current_time = time.time()
                 
-                # Process camera tracking data
+                # Process camera tracking data with throttling
                 if camera_msg['type'] == 'TRACKING':
-                    log_info("CONTROLLER", f"Human detected at distance: {camera_msg['distance']}")
-                    # Change state to TRACKING
                     self.current_state = "TRACKING"
                     self.target_direction = camera_msg['x_position']
-                    # Send command to Arduino based on target direction with a tolerance
-                    tolerance = self.config['camera']['tolerance']  # Get tolerance from config
+                    self.target_distance = camera_msg['distance']
+                    
+                    # Check if we are close to the target
+                    if self.target_distance <= self.config['camera']['close_distance']:
+                        # We are close to the target, stop arduino, change state and stop camera
+                        self.arduino.send_command("stop")
+                        self.current_state = "IDLE"
+                        self.camera_command_publisher.send_json({
+                            'command': 'STOP'
+                        })
+                        # Clear the target direction and distance
+                        self.target_direction = None
+                        self.target_distance = None
+                        last_direction = None
+                        last_command_time = 0
+
+                        log_info("CONTROLLER", "Stopping due to close target")
+                        continue
+
+                    
+                    # Determine direction based on position
+                    tolerance = self.config['camera']['tolerance']
                     if self.target_direction > tolerance:
-                        self.arduino.send_command("right")
+                        new_direction = "right"
                     elif self.target_direction < -tolerance:
-                        self.arduino.send_command("left")
+                        new_direction = "left"
                     else:
-                        self.arduino.send_command("forward")
+                        new_direction = "forward"
+                    
+                    # Only send command if time elapsed and direction changed
+                    if (current_time - last_command_time > throttle_interval and 
+                        new_direction != last_direction):
+                        self.arduino.send_command(new_direction)
+                        last_command_time = current_time
+                        last_direction = new_direction
+                        log_info("CONTROLLER", f"Sent command: {new_direction}")
             except zmq.Again:
                 pass
+
 
             # # Check for LIDAR data
             # try:
