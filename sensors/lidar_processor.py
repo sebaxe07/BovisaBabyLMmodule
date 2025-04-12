@@ -1,5 +1,6 @@
 # sensors/lidar_processor.py
 import logging
+import random
 import numpy as np
 from pyrplidar import PyRPlidar
 from collections import deque
@@ -152,27 +153,60 @@ class LidarProcessor:
         lidar = PyRPlidar()
         attempt = 0
         max_attempts = 3
+
+        # Scan quality check
+        expected_points = 1050  # Expected points per scan (~1060-1070)
+        min_acceptable = 800    # Minimum acceptable points threshold
+        point_history = []      # Keep track of recent scan quality
+        history_size = 5        # Number of scans to track
+        consecutive_bad_scans = 0
+        max_bad_scans = 3       # Trigger reset after this many bad scans
         
-        while attempt < max_attempts and self._running.is_set():
+        
+        while self._running.is_set():
             try:
                 attempt += 1
-                log_info("LIDAR","Connecting to LIDAR...")
-                log_info("LIDAR", f"LIDAR Port: {self.config['port']}")
-                lidar.connect(port=self.config['port'], 
-                            baudrate=115200, timeout=3)
+                log_info("LIDAR", f"Connecting to LIDAR (Attempt {attempt}/{max_attempts})...")
+                lidar.connect(port=self.config['port'], baudrate=115200, timeout=3)
                 lidar.set_motor_pwm(500)
                 time.sleep(2)
 
                 scan_generator = lidar.start_scan_express(mode=2)
                 current_scan = {'angles': [], 'distances': []}
-
+                
+                # Reset bad scan counter on successful reconnection
+                consecutive_bad_scans = 0
+                
                 for scan in scan_generator():
                     if not self._running.is_set():
                         break
 
                     if scan.start_flag:
                         if current_scan['angles']:
-                            # Process complete scan
+                            # Check scan quality
+                            points_count = len(current_scan['angles'])
+                            
+                            # Log point count periodically
+                            if random.random() < 0.05:  # Log ~5% of scans
+                                log_info("LIDAR", f"Scan points: {points_count}")
+                            
+                            # Track scan quality
+                            point_history.append(points_count)
+                            if len(point_history) > history_size:
+                                point_history.pop(0)
+                            
+                            # Check if scan quality is deteriorating
+                            if points_count < min_acceptable:
+                                consecutive_bad_scans += 1
+                                log_error("LIDAR", f"Low quality scan detected: {points_count} points (threshold: {min_acceptable})")
+                                
+                                if consecutive_bad_scans >= max_bad_scans:
+                                    log_error("LIDAR", f"Multiple bad scans detected ({consecutive_bad_scans}), resetting LIDAR...")
+                                    raise Exception("LIDAR quality degraded, forcing reset")
+                            else:
+                                consecutive_bad_scans = 0  # Reset counter on good scan
+                            
+                            # Process the scan normally
                             obstacles = self._process_scan(
                                 current_scan['angles'],
                                 current_scan['distances']
@@ -185,19 +219,44 @@ class LidarProcessor:
                                 'type': 'scan',
                                 'data': {
                                     'angles': current_scan['angles'],
-                                    'distances': current_scan['distances']
+                                    'distances': current_scan['distances'],
+                                    'quality': points_count
                                 }
                             })
+                            
+                            # Reset for next scan
                             current_scan = {'angles': [], 'distances': []}
                         
                     if scan.distance > 0:
                         current_scan['angles'].append(scan.angle)
-                        current_scan['distances'].append(scan.distance/1000.0)  # Convert to meters
+                        current_scan['distances'].append(scan.distance/1000.0)
                 
                 log_info("LIDAR", "Scan loop stopped")
+                
             except Exception as e:
                 log_error("LIDAR", f"Error: {e}")
-                time.sleep(1)  # Wait before retrying
+                
+                # Enhanced cleanup before retry
+                try:
+                    lidar.stop()
+                    lidar.set_motor_pwm(0)
+                    lidar.disconnect()
+                except:
+                    pass
+                    
+                # Force USB reset - add more aggressive recovery
+                if "quality degraded" in str(e):
+                    log_info("LIDAR", "Performing extended recovery sequence")
+                    time.sleep(3)  # Extended wait for USB to stabilize
+                else:
+                    time.sleep(1)
+                    
+                # If we exceed max attempts, wait longer before trying again
+                if attempt >= max_attempts:
+                    log_info("LIDAR", "Maximum attempts reached, waiting before retrying...")
+                    time.sleep(10)
+                    attempt = 0
+                    
             finally:
                 try:
                     log_info("LIDAR", "Disconnecting LIDAR")
