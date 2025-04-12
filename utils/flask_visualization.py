@@ -1,3 +1,4 @@
+import math
 from flask import Flask, render_template_string, jsonify, request
 import zmq
 from threading import Thread, Lock
@@ -343,6 +344,82 @@ HTML_TEMPLATE = """
 
             // Add velocity vector arrows to plot data
             plotData.push(...arrowTraces);
+
+                        if (data.human) {
+                const humanAngle = data.human.angle;
+                const humanDistance = data.human.distance;
+                
+                // Add human marker to plotData
+                plotData.push({
+                    type: 'scatterpolar',
+                    r: [humanDistance],
+                    theta: [humanAngle],
+                    mode: 'markers+text',
+                    name: 'Human',
+                    text: ['👤'],
+                    textposition: 'top center',
+                    textfont: {
+                        family: 'sans-serif',
+                        size: 18,
+                        color: '#000000'
+                    },
+                    marker: { 
+                        size: 15, 
+                        color: 'blue',
+                        symbol: 'circle',
+                        line: {
+                            color: 'white',
+                            width: 2
+                        }
+                    },
+                    hoverinfo: 'text',
+                    hovertext: `Human<br>Distance: ${humanDistance.toFixed(2)}m<br>Angle: ${humanAngle.toFixed(1)}°`,
+                    showlegend: true
+                });
+                
+                // Add a line from origin to human (optional)
+                plotData.push({
+                    type: 'scatterpolar',
+                    r: [0, humanDistance],
+                    theta: [0, humanAngle],
+                    mode: 'lines',
+                    line: {
+                        color: 'rgba(0, 0, 255, 0.5)',
+                        width: 2,
+                        dash: 'dot'
+                    },
+                    showlegend: false,
+                    hoverinfo: 'none'
+                });
+            }
+
+            if (data.human) {
+                // Add a distance ring around human's position
+                const ringPoints = 36;
+                const ringRadius = 0.5; // 0.5 meter radius around human
+                const ringAngles = [];
+                const ringDistances = [];
+                
+                for (let i = 0; i <= ringPoints; i++) {
+                    const angle = (i / ringPoints) * 360;
+                    ringAngles.push(angle);
+                    ringDistances.push(data.human.distance);
+                }
+                
+                plotData.push({
+                    type: 'scatterpolar',
+                    r: ringDistances,
+                    theta: ringAngles,
+                    mode: 'lines',
+                    line: {
+                        color: 'rgba(0, 0, 255, 0.3)',
+                        width: 1
+                    },
+                    showlegend: false,
+                    hoverinfo: 'none'
+                });
+            }
+
             
             // Update the plot
             Plotly.react(plotDiv, plotData, {
@@ -463,6 +540,77 @@ def zmq_listener():
             log_error("ZMQ", f"Error receiving data: {e}")
             time.sleep(0.1)
 
+
+def camera_to_lidar_coords(x_position, distance, camera_fov=70):
+    """
+    Convert camera coordinates to LIDAR coordinates
+    - x_position: lateral position from camera (-10 to +10, negative=left, positive=right)
+    - distance: forward distance in meters
+    - camera_fov: camera's field of view in degrees
+    
+    Returns (x, y) in LIDAR coordinate system where:
+    - x is forward distance
+    - y is lateral position (negative=left, positive=right)
+    """
+    # Calculate the angle in radians
+    # Assuming x_position of ±10 corresponds to ±(camera_fov/2) degrees
+    max_x_value = 10.0
+    angle_rad = (x_position / max_x_value) * (camera_fov / 2) * (math.pi / 180)
+    
+    # Calculate x,y coordinates
+    x = distance * math.cos(angle_rad)
+    y = distance * math.sin(angle_rad)
+    
+    # Since both camera and LIDAR have same conventions (right=positive),
+    # we DON'T need to negate y
+    return x, y
+
+def camera_data_listener():
+    """Listen for camera tracking data"""
+    context = zmq.Context()
+    camera_subscriber = context.socket(zmq.SUB)
+    camera_subscriber.connect("tcp://localhost:5558")
+    camera_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
+    
+    log_info("FLASK", "Camera subscriber connected to camera data stream")
+    
+    # Add to global scan_data
+    global scan_data
+    scan_data["human"] = None
+    
+    while True:
+        try:
+            camera_msg = camera_subscriber.recv_json()
+            
+            if camera_msg.get('type') == 'TRACKING':
+                with data_lock:
+                    # Get camera values
+                    x_position = float(camera_msg.get('x_position', 0))
+                    distance = float(camera_msg.get('distance', 0))
+                    
+                    # Use the improved coordinate conversion function
+                    x, y = camera_to_lidar_coords(x_position, distance)
+                    
+                    # Calculate angle in polar coordinates (correct for LIDAR)
+                    # For polar coordinates: 0° is forward, 90° is right
+                    angle = (math.degrees(math.atan2(y, x)) + 360) % 360
+                    
+                    # Store human data for visualization
+                    scan_data["human"] = {
+                        "x": x,
+                        "y": y,
+                        "distance": math.sqrt(x*x + y*y),
+                        "angle": angle,
+                        "timestamp": time.time()
+                    }
+                    
+                    log_info("FLASK", f"Updated human position: distance={distance:.2f}m, angle={angle:.1f}°")
+                    
+        except Exception as e:
+            log_error("FLASK", f"Error receiving camera data: {e}")
+            time.sleep(0.1)
+
+
 # Create a function to initialize everything
 def initialize():
     # Start ZMQ listener thread
@@ -471,9 +619,15 @@ def initialize():
     zmq_thread.start()
     setup_command_publisher()
     log_info("FLASK", "ZMQ listener started")
+    camera_thread = Thread(target=camera_data_listener)
+    camera_thread.daemon = True
+    camera_thread.start()
+    log_info("FLASK", "Camera data listener started")
 
 # Initialize when module is imported
 initialize()
+
+
 
 if __name__ == '__main__':
     # Start Flask app directly if this script is executed
