@@ -111,6 +111,8 @@ class MainController:
         throttle_interval = 0.2  # seconds between commands
         tolerance = self.config['camera']['tolerance']
 
+        not_found = False
+
         # Human tracking data from camera
         human_position = None
         human_distance = None
@@ -137,6 +139,7 @@ class MainController:
                 else:
                     # Process camera tracking data
                     if camera_msg['type'] == 'TRACKING':
+                        not_found = False
                         self.current_state = "TRACKING"
                         self.target_position = camera_msg['x_position']
                         self.target_distance = camera_msg['distance']
@@ -187,8 +190,9 @@ class MainController:
                             last_direction = self.target_direction 
                             log_info("CONTROLLER", f"Sent command: {self.target_direction }")
                 
-                    elif camera_msg['type'] == 'NOTFOUND':
+                    elif camera_msg['type'] == 'NOTFOUND' and not not_found:
                         # We lost track of the human or not found
+                        not_found = True
                         self.current_state = "SEARCH"
                         self.target_position = None
                         self.target_distance = None

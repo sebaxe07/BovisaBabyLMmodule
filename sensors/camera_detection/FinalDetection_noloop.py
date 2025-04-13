@@ -37,7 +37,8 @@ def to_controller(type, x_position: int, distance: float, human_id: int):
 def camera():
     ret, frame = cap.read()
     if not ret:
-        break
+        msg = to_controller('NOTWORKING', 0, 0, 0)
+        return msg
 
     # YOLO Detection
     results = model(frame, classes=[0], conf=0.5)
@@ -98,8 +99,8 @@ def camera():
 
 
     # cv2.imshow("Human Tracking", frame)
-    if cv2.waitKey(1) == ord('q'):
-        break
+    # if cv2.waitKey(1) == ord('q'):
+    #     break
     return msg
 
 cap.release()
