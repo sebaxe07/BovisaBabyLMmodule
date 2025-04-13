@@ -7,3 +7,11 @@ pySerial
 flask
 scikit-learn
 smbus
+# Deep learning and computer vision
+opencv-python
+torch
+onnx
+onnxruntime
+ultralytics
+# Configuration
+PyYAML
