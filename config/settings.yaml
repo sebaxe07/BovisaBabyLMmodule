@@ -29,7 +29,7 @@ camera:
   tolerance: 0.1 # meters
   close_distance: 1 # meters
   focal_length: 577.05
-  known_height: 1.83
+  known_height: 1.40
   colors:
     - [255, 0, 0]    # Red
     - [0, 255, 0]    # Green
@@ -37,7 +37,7 @@ camera:
     - [255, 255, 0]  # Yellow
     - [255, 0, 255]  # Magenta
   origin_point_bias: 320
-  model: "yolov8n.onnx"
+  model: "yolov8n-pose.onnx"
   max_age: 15
   confidence_threshold: 0.5
   debug_visualization: true

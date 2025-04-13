@@ -9,7 +9,7 @@ import zmq
 import time
 from motor.arduino_interface import ArduinoInterface
 from sensors.lidar_processor import LidarProcessor
-from sensors.camera_client import MockCameraClient
+from sensors.camera_client import CameraClient
 from utils.colored_logger import log_info, log_error, log_debug
 
 class MainController:
@@ -74,7 +74,7 @@ class MainController:
         """Start camera processing in a separate thread"""
         log_info("CONTROLLER", "Starting camera processor")
         def run_camera():
-            camera = MockCameraClient(self.config['camera'])
+            camera = CameraClient(self.config['camera'])
             camera.process_commands()
             # Store reference to allow clean shutdown later
             self.camera_client = camera
