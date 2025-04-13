@@ -186,6 +186,19 @@ class MainController:
                             last_command_time = current_time
                             last_direction = self.target_direction 
                             log_info("CONTROLLER", f"Sent command: {self.target_direction }")
+                
+                    elif camera_msg['type'] == 'NOTFOUND':
+                        # We lost track of the human or not found
+                        self.current_state = "SEARCH"
+                        self.target_position = None
+                        self.target_distance = None
+                        self.target_direction = None
+                        last_direction = None
+                        last_command_time = 0
+                        
+                        log_info("CONTROLLER", "Lost track, stopping movement")
+                        self.arduino.send_command("stop")
+
             except zmq.Again:
                 pass
             
