@@ -39,6 +39,7 @@ class MockCameraClient:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 224) 
         self.confidence_threshold = config['confidence_threshold']
 
+
         self.id_tracked = 0
 
         # Default position values for mock camera
@@ -83,13 +84,67 @@ class MockCameraClient:
             time.sleep(0.5)
 
     def cal_x_of_obj(self, position):
-        x_center = (position[2] - position[0])/2 - self.origin_point_bias[0]
-        y_center = (position[2] - position[0])/2 - self.origin_point_bias[1]
-        return x_center
+        # Calculate the center of the rectangle
+        x_center = (position[0] + position[2]) / 2
+        
+        # Get the frame center
+        frame_width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        frame_center = frame_width / 2
+        
+        # Calculate distance from center (negative = left, positive = right)
+        offset_from_center = x_center - frame_center
+        
+        # Map to range -10 to 10
+        scaled_position = (offset_from_center / frame_center) * 10
+        
+        return scaled_position
 
-
-    def estimate_distance(self, box_height):
-        return (self.known_height * self.focal_length) / box_height
+    def estimate_distance(self, box_height, y1, y2, frame_height=None):
+        """
+        Estimate distance with compensation for partially visible humans
+        
+        Args:
+            box_height: Height of the bounding box in pixels
+            y1: Top y-coordinate of the bounding box
+            y2: Bottom y-coordinate of the bounding box
+            frame_height: Height of the camera frame
+        """
+        # Get the frame height if not provided
+        if frame_height is None:
+            frame_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        
+        # Check if the person is touching bottom edge
+        bottom_margin = 10  # Pixels from bottom to consider as "touching edge"
+        is_cut_off_bottom = (frame_height - y2 <= bottom_margin)
+        
+        # Standard calculation for fully visible person
+        if not is_cut_off_bottom:
+            return (self.known_height * self.focal_length) / box_height, False
+        
+        # Person is cut off at bottom - apply correction
+        
+        # Estimate visible portion based on typical human body proportions
+        # Full standing human proportions: head+torso ~68% of height, legs ~32%
+        # We use y1 position to estimate how much of person is likely in frame
+        
+        # Check how high up the detection starts (lower y1 = more of upper body visible)
+        relative_y1_pos = y1 / frame_height
+        
+        if relative_y1_pos < 0.2:
+            # Mostly complete upper body visible - assume 68% visibility
+            visible_ratio = 0.68
+        elif relative_y1_pos < 0.4:
+            # Partial upper body - assume 50% visibility
+            visible_ratio = 0.50
+        else:
+            # Only upper portion visible - assume 35% visibility
+            visible_ratio = 0.35
+            
+        # Apply correction
+        corrected_height = box_height / visible_ratio
+        distance = (self.known_height * self.focal_length) / corrected_height
+        
+        return distance, True
         
     def get_cpu_temperature(self):
         """Get the Raspberry Pi CPU temperature in Celsius"""
@@ -152,7 +207,14 @@ class MockCameraClient:
                         
                         # Calculate distance
                         box_height = y2 - y1
-                        distance = self.estimate_distance(box_height)
+                        frame_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                        distance, correction_applied = self.estimate_distance(box_height, y1, y2, frame_height)
+
+                        # Add visual indicator for partial visibility if debugging
+                        if self.debug_visualization and correction_applied:
+                            # Add a "PARTIAL" indicator at the bottom of the bounding box
+                            cv2.putText(frame, "PARTIAL", (x1, y2+25), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                         
                         # Check if we are tracking a person
                         if self.id_tracked == 0:
@@ -178,6 +240,34 @@ class MockCameraClient:
                                     f"Person {track_id} ({distance:.2f}m)",
                                     (x1, y1-10),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                            
+                            # Calculate center point
+                            center_x = (x1 + x2) // 2
+                            center_y = (y1 + y2) // 2
+                            
+                            # Calculate x value using cal_x_of_obj
+                            x_value = self.cal_x_of_obj(ltrb)
+                            
+                            # Draw center point
+                            cv2.circle(frame, (center_x, center_y), 5, (0, 0, 255), -1)  # Red filled circle
+                            
+                            # Draw x value
+                            cv2.putText(frame,
+                                    f"x: {x_value:.1f}",
+                                    (center_x + 10, center_y),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                            
+                            # Draw LTRB values at respective corners
+                            font_scale = 0.4
+                            font_thickness = 1
+                            # Left
+                            cv2.putText(frame, f"L:{x1}", (x1-5, center_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
+                            # Top
+                            cv2.putText(frame, f"T:{y1}", (center_x, y1-5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
+                            # Right
+                            cv2.putText(frame, f"R:{x2}", (x2+5, center_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
+                            # Bottom
+                            cv2.putText(frame, f"B:{y2}", (center_x, y2+15), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
 
                     except Exception as e:
                         log_error("CAMERA", f"Tracking error: {e}")
