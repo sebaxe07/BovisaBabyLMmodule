@@ -11,14 +11,14 @@ def send_int(value):
         except Exception as e:
             print(f"Error sending data: {e}")
 
-if __name__ == "__main__":
-    try:
-        while True:
-            send_int(1)
-            time.sleep(2)
-            send_int(2)
-            time.sleep(2)
-            send_int(3)
-            time.sleep(2)
-    except KeyboardInterrupt:
-        print("Exiting...")
+# if __name__ == "__main__":
+#     try:
+#         while True:
+#             send_int(1)
+#             time.sleep(2)
+#             send_int(2)
+#             time.sleep(2)
+#             send_int(3)
+#             time.sleep(2)
+#     except KeyboardInterrupt:
+#         print("Exiting...")

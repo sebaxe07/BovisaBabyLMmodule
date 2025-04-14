@@ -604,7 +604,7 @@ def camera_data_listener():
                         "timestamp": time.time()
                     }
                     
-                    log_info("FLASK", f"Updated human position: distance={distance:.2f}m, angle={angle:.1f}°")
+                    #log_info("FLASK", f"Updated human position: distance={distance:.2f}m, angle={angle:.1f}°")
                     
         except Exception as e:
             log_error("FLASK", f"Error receiving camera data: {e}")

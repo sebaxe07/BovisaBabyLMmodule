@@ -2,12 +2,14 @@ import smbus
 import time
 import logging
 from threading import Thread, Event
+
+from smbus2 import SMBus
 from utils.colored_logger import log_info, log_error, log_debug
 
 class ArduinoInterface:
     def __init__(self, config):
-        self.mock_mode = config.get('mock_mode', False)
-        print(f"Mock mode: {self.mock_mode}")
+        self.mock_mode = config['mock_mode']
+
         self.logger = logging.getLogger('arduino_interface')
         
         if self.mock_mode:
@@ -15,8 +17,7 @@ class ArduinoInterface:
             self._setup_mock()
         else:
             try:
-                self.bus = smbus.SMBus(config['bus_number'])
-                self.address = config['arduino_address']
+                self.address = config['I2C_ADDRESS']
                 self._initialize_arduino()
                 self.logger.info("Connected to Arduino via I2C")
             except Exception as e:
@@ -68,10 +69,19 @@ class ArduinoInterface:
             # Sleep to avoid hogging CPU
             time.sleep(0.1)
 
+    def send_int(self, value):
+        with SMBus(1) as bus:
+            try:
+                bus.write_byte(self.address, value)
+                log_info("ARDUINO", f"Raspberry Pi sent: {value} to Arduino at address 0x{self.address:02X}")
+            except Exception as e:
+                log_error("ARDUINO", f"Error sending data: {e}")
+
+
     def _initialize_arduino(self):
         """Send an initialization signal to the Arduino."""
         try:
-            self.bus.write_byte(self.address, 0)  # Send a reset/init signal
+            self.send_int(0)  # Send stop command to Arduino
             time.sleep(0.1)  # Allow Arduino to process
         except Exception as e:
             self.logger.error(f"Error initializing Arduino: {e}")
@@ -104,7 +114,7 @@ class ArduinoInterface:
         else:
             try:
                 log_info("ARDUINO", f"Sending command {command} to Arduino")
-                self.bus.write_byte(self.address, command)
+                self.send_int(command)
             except Exception as e:
                 log_error("ARDUINO", f"Error sending command to Arduino: {e}")
                 

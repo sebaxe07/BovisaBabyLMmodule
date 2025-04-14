@@ -6,9 +6,8 @@ lidar:
   scan_interval: 0.1 # seconds
 
 arduino:
-  port: "/dev/ttyACM0" 
   bus_number: 1  # I2C bus number for hardware mode
-  arduino_address: 0x08  # I2C address for hardware mode
+  I2C_ADDRESS: 0x08  # I2C address for hardware mode
   mock_mode: true
   mock_settings:
     battery_initial: 12.0  # volts
@@ -26,10 +25,10 @@ robot:
     
 camera:
   port: "/dev/video0"
-  tolerance: 0.1 # meters
-  close_distance: 1 # meters
+  tolerance: 0.5 # meters
+  close_distance: 1.5 # meters
   focal_length: 577.05
-  known_height: 1.40
+  known_height: 1.60
   colors:
     - [255, 0, 0]    # Red
     - [0, 255, 0]    # Green

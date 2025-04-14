@@ -55,7 +55,7 @@ class CameraClient:
             self.colors = config['colors']
             self.origin_point_bias = config['origin_point_bias']
             self.debug_visualization = config['debug_visualization']
-
+            log_debug("CAMERA", f"Debug visualization: {self.debug_visualization}")
             self.distance_history = []
             self.max_history = 5  # Keep last 5 measurements
 
@@ -99,7 +99,7 @@ class CameraClient:
 
             # Send message
             self.publisher.send_json(message)
-            log_info("CAMERA", f"Sent tracking data: x={self.x_position}, dist={self.distance}")
+            #log_info("CAMERA", f"Sent tracking data: x={self.x_position}, dist={self.distance}")
 
             # Wait before sending the next message
             time.sleep(0.5)
@@ -323,155 +323,159 @@ class CameraClient:
 
                     # Convert to numpy array for ByteTrack
                     detections_np = np.array(detections)
-                    
-                    # ByteTrack Update
-                    tracks = self.tracker.update(detections_np, frame)
-
                     min_distance = 10000
                     min_ltrb = [1000] * 4
                     min_track_id = 1000
+                    try: 
+                        # ByteTrack Update
+                        tracks = self.tracker.update(detections_np, frame)
 
-                    for track in tracks:
-                        try:
-                            # ByteTrack returns [x1, y1, x2, y2, track_id, conf, cls, ...]
-                            x1, y1, x2, y2, track_id = map(int, track[:5])
-                            ltrb = [x1, y1, x2, y2]
-                            
-                            # Calculate distance
-                            keypoints_for_track = None
-                            for i, kpts in enumerate(results[0].keypoints.data):
-                                # Find keypoints that match this track's bounding box
-                                kpts_x_center = float(kpts[:, 0].mean())  # Add float() here
-                                kpts_y_center = float(kpts[:, 1].mean())  # Add float() here
-                                if (x1 <= kpts_x_center <= x2 and y1 <= kpts_y_center <= y2):
-                                    keypoints_for_track = kpts
-                                    break
-
-                            # Calculate distance with keypoints
-                            box_height = y2 - y1
-                            frame_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-                            if keypoints_for_track is not None:
-                                distance, correction_applied = self.estimate_distance_from_keypoints(
-                                    keypoints_for_track, box_height, y1, y2, frame_height)
-                            else:
-                                distance, correction_applied = self.estimate_distance(box_height, y1, y2, frame_height)
-
-
-                            # Apply smoothing filter
-                            self.distance_history.append(distance)
-                            while len(self.distance_history) > self.max_history:
-                                self.distance_history.pop(0)
-
-                            # Use median for stability (more robust to outliers than average)
-                            if len(self.distance_history) > 1:
-                                distance = sorted(self.distance_history)[len(self.distance_history)//2]
-                            
-                            # Add visual indicator for partial visibility if debugging
-                            if self.debug_visualization and correction_applied:
-                                # Add a "PARTIAL" indicator at the top of the bounding box
-                                cv2.putText(frame, "PARTIAL", (x1, y1+10), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                            
-                            # Check if we are tracking a person
-                            if self.id_tracked == 0:
-                                # We are not tracking a person, find the closest one
-                                if min_distance > distance:
-                                    min_distance = distance
-                                    min_ltrb = copy.copy(ltrb)
-                                    min_track_id = track_id
-                            else:
-                                # We are already tracking a person, check if it's the same one
-                                if track_id == self.id_tracked:
-                                    min_distance = distance
-                                    min_ltrb = copy.copy(ltrb)
-                                    min_track_id = track_id
-
-                            if self.debug_visualization:
-                                    for i, kpts in enumerate(results[0].keypoints.data):
-                                        # Draw keypoints
-                                        for kp in kpts:
-                                            x, y, conf = kp
-                                            if conf > 0.5:  # Only draw keypoints with confidence > 0.5
-                                                cv2.circle(frame, (int(x), int(y)), 3, (0, 255, 0), -1)
-                                        
-                                        # Draw connections between keypoints (skeleton)
-                                        # COCO keypoint connections
-                                        skeleton = [
-                                            [16, 14], [14, 12], [17, 15], [15, 13], [12, 13], [6, 12], [7, 13], 
-                                            [6, 7], [6, 8], [7, 9], [8, 10], [9, 11], [2, 3], [1, 2], [1, 3], 
-                                            [2, 4], [3, 5], [4, 6], [5, 7]
-                                        ]
-                                        
-                                        for connection in skeleton:
-                                            idx1, idx2 = connection
-                                            try:
-                                                # Get the connection points
-                                                con_pts = kpts[[idx1-1, idx2-1]]
-                                                # Convert tensor min to scalar before boolean comparison
-                                                min_conf = float(con_pts[:, 2].min())  # Explicit conversion to float
-                                                if min_conf > 0.5:  # Now a simple float comparison
-                                                    pt1 = (int(con_pts[0, 0]), int(con_pts[0, 1]))
-                                                    pt2 = (int(con_pts[1, 0]), int(con_pts[1, 1]))
-                                                    cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
-                                            except Exception as e:
-                                                # Skip problematic connections silently
-                                                continue
-                                        # Still draw bounding box for reference
-                                        x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-                                        color = self.colors[track_id % len(self.colors)] if 'track_id' in locals() else (0, 255, 0)
-                                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)  # Thinner box
-
-                            if self.debug_visualization:
-                                # Draw bounding box and label
-                                color = self.colors[track_id % len(self.colors)]
-                                cv2.putText(frame,
-                                        f"Person {track_id} ({distance:.2f}m)",
-                                        (x1, y1-10),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                        for track in tracks:
+                            try:
+                                # ByteTrack returns [x1, y1, x2, y2, track_id, conf, cls, ...]
+                                x1, y1, x2, y2, track_id = map(int, track[:5])
+                                ltrb = [x1, y1, x2, y2]
                                 
-                                # Calculate center point
-                                center_x = (x1 + x2) // 2
-                                center_y = (y1 + y2) // 2
-                                
-                                # Calculate x value using cal_x_of_obj
-                                x_value = self.cal_x_of_obj(ltrb)
-                                
-                                if x_value is None:
-                                    log_error("CAMERA", "Failed to calculate x position")
-                                    break
+                                # Calculate distance
+                                keypoints_for_track = None
+                                for i, kpts in enumerate(results[0].keypoints.data):
+                                    # Find keypoints that match this track's bounding box
+                                    kpts_x_center = float(kpts[:, 0].mean())  # Add float() here
+                                    kpts_y_center = float(kpts[:, 1].mean())  # Add float() here
+                                    if (x1 <= kpts_x_center <= x2 and y1 <= kpts_y_center <= y2):
+                                        keypoints_for_track = kpts
+                                        break
 
-                                # Draw center point
-                                cv2.circle(frame, (center_x, center_y), 5, (0, 0, 255), -1)  # Red filled circle
-                                
-                                # Draw x value
-                                cv2.putText(frame,
-                                        f"x: {x_value:.1f}",
-                                        (center_x + 10, center_y),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                                
-                                # Draw LTRB values at respective corners
-                                font_scale = 0.4
-                                font_thickness = 1
-                                # Left
-                                cv2.putText(frame, f"L:{x1}", (x1-5, center_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
-                                # Top
-                                cv2.putText(frame, f"T:{y1}", (center_x, y1-5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
-                                # Right
-                                cv2.putText(frame, f"R:{x2}", (x2+5, center_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
-                                # Bottom
-                                cv2.putText(frame, f"B:{y2}", (center_x, y2+15), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
+                                # Calculate distance with keypoints
+                                box_height = y2 - y1
+                                frame_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                                if keypoints_for_track is not None:
+                                    distance, correction_applied = self.estimate_distance_from_keypoints(
+                                        keypoints_for_track, box_height, y1, y2, frame_height)
+                                else:
+                                    distance, correction_applied = self.estimate_distance(box_height, y1, y2, frame_height)
 
-                        except Exception as e:
-                            log_error("CAMERA", f"Tracking error: {e}")
-                            message = {
-                                "type": "NOTFOUND",
-                                "x_position": 0,
-                                "distance": 0,
-                                "human_id": 0
-                            }
-                            # Assume we lost the track
-                            self.id_tracked = 0
-                            continue
+
+                                # Apply smoothing filter
+                                self.distance_history.append(distance)
+                                while len(self.distance_history) > self.max_history:
+                                    self.distance_history.pop(0)
+
+                                # Use median for stability (more robust to outliers than average)
+                                if len(self.distance_history) > 1:
+                                    distance = sorted(self.distance_history)[len(self.distance_history)//2]
+                                
+                                # Add visual indicator for partial visibility if debugging
+                                if self.debug_visualization and correction_applied:
+                                    # Add a "PARTIAL" indicator at the top of the bounding box
+                                    cv2.putText(frame, "PARTIAL", (x1, y1+10), 
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                                
+                                # Check if we are tracking a person
+                                if self.id_tracked == 0:
+                                    # We are not tracking a person, find the closest one
+                                    if min_distance > distance:
+                                        min_distance = distance
+                                        min_ltrb = copy.copy(ltrb)
+                                        min_track_id = track_id
+                                else:
+                                    # We are already tracking a person, check if it's the same one
+                                    if track_id == self.id_tracked:
+                                        min_distance = distance
+                                        min_ltrb = copy.copy(ltrb)
+                                        min_track_id = track_id
+
+                                if self.debug_visualization:
+                                        for i, kpts in enumerate(results[0].keypoints.data):
+                                            # Draw keypoints
+                                            for kp in kpts:
+                                                x, y, conf = kp
+                                                if conf > 0.5:  # Only draw keypoints with confidence > 0.5
+                                                    cv2.circle(frame, (int(x), int(y)), 3, (0, 255, 0), -1)
+                                            
+                                            # Draw connections between keypoints (skeleton)
+                                            # COCO keypoint connections
+                                            skeleton = [
+                                                [16, 14], [14, 12], [17, 15], [15, 13], [12, 13], [6, 12], [7, 13], 
+                                                [6, 7], [6, 8], [7, 9], [8, 10], [9, 11], [2, 3], [1, 2], [1, 3], 
+                                                [2, 4], [3, 5], [4, 6], [5, 7]
+                                            ]
+                                            
+                                            for connection in skeleton:
+                                                idx1, idx2 = connection
+                                                try:
+                                                    # Get the connection points
+                                                    con_pts = kpts[[idx1-1, idx2-1]]
+                                                    # Convert tensor min to scalar before boolean comparison
+                                                    min_conf = float(con_pts[:, 2].min())  # Explicit conversion to float
+                                                    if min_conf > 0.5:  # Now a simple float comparison
+                                                        pt1 = (int(con_pts[0, 0]), int(con_pts[0, 1]))
+                                                        pt2 = (int(con_pts[1, 0]), int(con_pts[1, 1]))
+                                                        cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
+                                                except Exception as e:
+                                                    # Skip problematic connections silently
+                                                    continue
+                                            # Still draw bounding box for reference
+                                            x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+                                            color = self.colors[track_id % len(self.colors)] if 'track_id' in locals() else (0, 255, 0)
+                                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)  # Thinner box
+
+                                if self.debug_visualization:
+                                    # Draw bounding box and label
+                                    color = self.colors[track_id % len(self.colors)]
+                                    cv2.putText(frame,
+                                            f"Person {track_id} ({distance:.2f}m)",
+                                            (x1, y1-10),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                                    
+                                    # Calculate center point
+                                    center_x = (x1 + x2) // 2
+                                    center_y = (y1 + y2) // 2
+                                    
+                                    # Calculate x value using cal_x_of_obj
+                                    x_value = self.cal_x_of_obj(ltrb)
+                                    
+                                    if x_value is None:
+                                        log_error("CAMERA", "Failed to calculate x position")
+                                        break
+
+                                    # Draw center point
+                                    cv2.circle(frame, (center_x, center_y), 5, (0, 0, 255), -1)  # Red filled circle
+                                    
+                                    # Draw x value
+                                    cv2.putText(frame,
+                                            f"x: {x_value:.1f}",
+                                            (center_x + 10, center_y),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                                    
+                                    # Draw LTRB values at respective corners
+                                    font_scale = 0.4
+                                    font_thickness = 1
+                                    # Left
+                                    cv2.putText(frame, f"L:{x1}", (x1-5, center_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
+                                    # Top
+                                    cv2.putText(frame, f"T:{y1}", (center_x, y1-5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
+                                    # Right
+                                    cv2.putText(frame, f"R:{x2}", (x2+5, center_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
+                                    # Bottom
+                                    cv2.putText(frame, f"B:{y2}", (center_x, y2+15), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
+
+                            except Exception as e:
+                                log_error("CAMERA", f"Tracking error: {e}")
+                                message = {
+                                    "type": "NOTFOUND",
+                                    "x_position": 0,
+                                    "distance": 0,
+                                    "human_id": 0
+                                }
+                                # Assume we lost the track
+                                self.id_tracked = 0
+                                continue
+                   
+                    except Exception as e:
+                        log_error("CAMERA", f"Tracking loop error: {e}")
+                        import traceback
+                        log_error("CAMERA", traceback.format_exc())
 
                     # If no tracks are found or none matched our criteria
                     if min_distance == 10000 and self.status == "TRACKING":
@@ -508,7 +512,7 @@ class CameraClient:
                             "distance": min_distance,
                             "human_id": min_track_id
                         }
-                        log_info("CAMERA", f"Found track: {min_track_id} at distance {min_distance:.2f}m at position {x_value:.1f}")
+                        # log_info("CAMERA", f"Found track: {min_track_id} at distance {min_distance:.2f}m at position {x_value:.1f}")
                         self.id_tracked = min_track_id
 
                 else:
@@ -537,19 +541,19 @@ class CameraClient:
                         log_debug("CAMERA", "Exiting debug visualization loop")
                         self.running = False
                         break
-                else:
-                    log_info("CAMERA", f"FPS: {int(fps)}, CPU: {self.get_cpu_temperature():.1f}°C")          
+                #else:
+                    #log_info("CAMERA", f"FPS: {int(fps)}, CPU: {self.get_cpu_temperature():.1f}°C")          
                     
                 # Send message to publisher one time if we lost the track or constant updates if we are tracking
                 if self.status == "LOST":
                     # Send message
                     self.publisher.send_json(message)
-                    log_info("CAMERA", f"Sent tracking data: x={message['x_position']}, dist={message['distance']}, human_id={message['human_id']}")
+                    #log_info("CAMERA", f"Sent tracking data: x={message['x_position']}, dist={message['distance']}, human_id={message['human_id']}")
                     # Reset status
                     self.status = "SEARCHING"
                 elif self.status == "TRACKING":
                     self.publisher.send_json(message)
-                    log_info("CAMERA", f"Sent tracking data: x={message['x_position']}, dist={message['distance']}, human_id={message['human_id']}")
+                    #log_info("CAMERA", f"Sent tracking data: x={message['x_position']}, dist={message['distance']}, human_id={message['human_id']}")
 
                 # Wait before sending the next message
                 target_fps = 10  # Adjust based on your needs
@@ -559,7 +563,7 @@ class CameraClient:
                 time.sleep(sleep_time)
 
         except Exception as e:
-            log_error("CAMERA", f"Tracking loop error: {e}")
+            log_error("CAMERA", f"Main loop error: {e}")
             import traceback
             log_error("CAMERA", traceback.format_exc())
         
@@ -570,7 +574,8 @@ class CameraClient:
                 self.cap = None
         except Exception as e:
             log_error("CAMERA", f"Error cleaning up camera in tracking loop: {e}")
-        
+        # Just in case it crashes or something
+        self.running = False
         if self.debug_visualization:
             cv2.destroyAllWindows()
         

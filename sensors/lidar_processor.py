@@ -156,7 +156,7 @@ class LidarProcessor:
 
         # Scan quality check
         expected_points = 1050  # Expected points per scan (~1060-1070)
-        min_acceptable = 800    # Minimum acceptable points threshold
+        min_acceptable = 100    # Minimum acceptable points threshold
         point_history = []      # Keep track of recent scan quality
         history_size = 5        # Number of scans to track
         consecutive_bad_scans = 0
