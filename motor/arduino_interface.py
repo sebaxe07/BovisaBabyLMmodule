@@ -90,7 +90,7 @@ class ArduinoInterface:
         """
         Send a movement command to the Arduino.
         Commands are represented as integers:
-        0 = stop, 1 = forward, 2 = backward, 3 = left, 4 = right
+        0 = stop, 1 = forward, 2 = backward, 3 = left, 4 = right, 10 = found.
         """
         log_info("ARDUINO", f"Receiving command: {command}")
 
@@ -100,11 +100,12 @@ class ArduinoInterface:
                 "forward": 1,
                 "backward": 2,
                 "left": 3,
-                "right": 4
+                "right": 4,
+                "found": 10
             }
             command = command_map.get(command.lower(), 0)  # Default to stop if invalid
             
-        if command not in range(5):  # Validate command range
+        if command not in range(11):  # Validate command range
             log_error("ARDUINO", f"Invalid command: {command}. Defaulting to stop.")
             command = 0
             

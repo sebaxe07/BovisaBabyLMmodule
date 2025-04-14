@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LIDAR and Camera Visualization</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <h1>Robot Visualization Dashboard</h1>
+    <div id="status">Status: Waiting for initial data...</div>
+    
+    <div class="dashboard-container">
+        <div class="column">
+            <!-- Control Panel -->
+            <div id="controls">
+                <button id="startTracking" class="control-button start-button">Start Tracking</button>
+                <button id="stopTracking" class="control-button stop-button">Stop Robot</button>
+                <button id="startSearch" class="control-button sim-button">Start Search</button>
+                <span id="current-mode">Mode: IDLE</span>
+            </div>
+
+            <!-- Video Stream -->
+            <div id="video-container">
+                <h2>Camera Feed</h2>
+                <img id="video-stream" src="{{ url_for('video_feed') }}" alt="Video stream">
+            </div>
+        </div>
+        
+        <div class="column">
+            <!-- LIDAR Visualization -->
+            <div id="plot-container">
+                <h2>LIDAR Visualization</h2>
+                <div id="plot"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="simulation-controls">
+        <h3>Mock Human Position Control</h3>
+        <div>
+            <label for="x-position">X Position: <span id="x-value">-5.0</span></label>
+            <input type="range" id="x-position" min="-10" max="10" step="0.1" value="-5.0">
+        </div>
+        <div>
+            <label for="distance">Distance: <span id="distance-value">2.0</span></label>
+            <input type="range" id="distance" min="0.5" max="10" step="0.1" value="2.0">
+        </div>
+    </div>
+    
+    <!-- Include JavaScript files -->
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

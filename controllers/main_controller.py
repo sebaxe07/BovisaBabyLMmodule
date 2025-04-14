@@ -159,7 +159,7 @@ class MainController:
                         # Check if we are close to the target
                         if self.target_distance <= self.config['camera']['close_distance']:
                             # We are close to the target, stop arduino, change state and stop camera
-                            self.arduino.send_command("stop")
+                            self.arduino.send_command("found")
                             self.current_state = "IDLE"
                             self.camera_command_publisher.send_json({
                                 'command': 'STOP'
