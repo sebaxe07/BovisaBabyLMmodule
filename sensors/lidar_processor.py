@@ -96,15 +96,31 @@ class LidarProcessor:
         return new_obstacles
 
     def _improved_clustering(self, obstacles):
-        """Cluster obstacles using DBSCAN algorithm"""
+        """Cluster obstacles using DBSCAN algorithm and return polygon representations"""
         if len(obstacles) < 3:
             return self._cluster_obstacles(obstacles)  # Fall back to original method
             
         # Extract points as numpy array
         points = np.array([[obs['x'], obs['y']] for obs in obstacles])
         
+        # Make DBSCAN parameters adaptive based on point density
+        if len(points) > 5:
+            # Calculate average distance to nearest neighbors
+            from scipy.spatial import KDTree
+            kdtree = KDTree(points)
+            distances, _ = kdtree.query(points, k=3)  # Find 3 nearest neighbors
+            avg_nn_dist = np.mean(distances[:, 1:])  # Skip first one (self)
+            
+            # Adaptive parameters based on point density
+            eps = max(0.15, min(0.5, avg_nn_dist * 2.0))
+            min_samples = max(2, min(5, int(len(points) * 0.05)))  # 5% of points, between 2-5
+            log_info("LIDAR", f"Adaptive DBSCAN: eps={eps:.2f}, min_samples={min_samples}")
+        else:
+            eps = 0.3
+            min_samples = 2
+        
         # Apply DBSCAN clustering
-        db = DBSCAN(eps=0.3, min_samples=3).fit(points)
+        db = DBSCAN(eps=eps, min_samples=min_samples).fit(points)
         labels = db.labels_
         
         # Process clusters
@@ -118,21 +134,56 @@ class LidarProcessor:
             mask = labels == label
             cluster_points = [obstacles[i] for i in range(len(obstacles)) if mask[i]]
             
-            # Calculate cluster properties
+            # Calculate cluster centroid properties
             x_avg = sum(p['x'] for p in cluster_points) / len(cluster_points)
             y_avg = sum(p['y'] for p in cluster_points) / len(cluster_points)
             min_dist = min(p['distance'] for p in cluster_points)
             
+            # Calculate bounding box for the cluster
+            x_values = [p['x'] for p in cluster_points]
+            y_values = [p['y'] for p in cluster_points]
+            min_x, max_x = min(x_values), max(x_values)
+            min_y, max_y = min(y_values), max(y_values)
+            
+            # Ensure minimum size for small obstacles (like columns)
+            width = max_x - min_x
+            height = max_y - min_y
+            min_size = 0.1  # Minimum 10cm size for any dimension
+            
+            if width < min_size:
+                center_x = (min_x + max_x) / 2
+                min_x = center_x - min_size / 2
+                max_x = center_x + min_size / 2
+                
+            if height < min_size:
+                center_y = (min_y + max_y) / 2
+                min_y = center_y - min_size / 2
+                max_y = center_y + min_size / 2
+            
+            # Create the enhanced obstacle representation
             clusters.append({
-                'x': x_avg,
-                'y': y_avg,
-                'distance': min_dist
+                'x': x_avg,            # Center x (for compatibility with existing code)
+                'y': y_avg,            # Center y (for compatibility with existing code)
+                'distance': min_dist,  # Distance to closest point (for compatibility)
+                'polygon': {
+                    'type': 'rectangle',
+                    'corners': [
+                        [min_x, min_y],  # Bottom-left
+                        [max_x, min_y],  # Bottom-right
+                        [max_x, max_y],  # Top-right
+                        [min_x, max_y],  # Top-left
+                    ]
+                },
+                'width': max_x - min_x,
+                'height': max_y - min_y,
+                'area': (max_x - min_x) * (max_y - min_y),
+                'point_count': len(cluster_points)
             })
         
         return clusters
-
+    
     def _cluster_obstacles(self, obstacles, dist_threshold=0.3):
-        """Group nearby obstacles"""
+        """Group nearby obstacles and return polygon representations"""
         clusters = []
         for obs in obstacles:
             matched = False
@@ -140,15 +191,77 @@ class LidarProcessor:
                 dx = obs['x'] - cluster['x']
                 dy = obs['y'] - cluster['y']
                 if np.hypot(dx, dy) < dist_threshold:
+                    # Update centroid
                     cluster['x'] = (cluster['x'] + obs['x'])/2
                     cluster['y'] = (cluster['y'] + obs['y'])/2
                     cluster['distance'] = min(cluster['distance'], obs['distance'])
+                    
+                    # Update point list and recalculate bounding box
+                    if 'points' not in cluster:
+                        cluster['points'] = [{'x': cluster['x'], 'y': cluster['y']}]
+                    cluster['points'].append({'x': obs['x'], 'y': obs['y']})
+                    
+                    # Recalculate bounding box
+                    x_values = [p['x'] for p in cluster['points']]
+                    y_values = [p['y'] for p in cluster['points']]
+                    min_x, max_x = min(x_values), max(x_values)
+                    min_y, max_y = min(y_values), max(y_values)
+                    
+                    # Ensure minimum size
+                    min_size = 0.1
+                    width = max_x - min_x
+                    height = max_y - min_y
+                    
+                    if width < min_size:
+                        center_x = (min_x + max_x) / 2
+                        min_x = center_x - min_size / 2
+                        max_x = center_x + min_size / 2
+                        
+                    if height < min_size:
+                        center_y = (min_y + max_y) / 2
+                        min_y = center_y - min_size / 2
+                        max_y = center_y + min_size / 2
+                    
+                    # Update polygon info
+                    cluster['polygon'] = {
+                        'type': 'rectangle',
+                        'corners': [
+                            [min_x, min_y],  # Bottom-left
+                            [max_x, min_y],  # Bottom-right
+                            [max_x, max_y],  # Top-right
+                            [min_x, max_y],  # Top-left
+                        ]
+                    }
+                    cluster['width'] = max_x - min_x
+                    cluster['height'] = max_y - min_y
+                    cluster['area'] = (max_x - min_x) * (max_y - min_y)
+                    cluster['point_count'] = len(cluster['points'])
+                    
                     matched = True
                     break
+            
             if not matched:
-                clusters.append(obs.copy())
+                new_cluster = obs.copy()
+                # Add polygon info for new single-point clusters
+                min_size = 0.1
+                new_cluster['polygon'] = {
+                    'type': 'rectangle',
+                    'corners': [
+                        [obs['x'] - min_size/2, obs['y'] - min_size/2],
+                        [obs['x'] + min_size/2, obs['y'] - min_size/2],
+                        [obs['x'] + min_size/2, obs['y'] + min_size/2],
+                        [obs['x'] - min_size/2, obs['y'] + min_size/2],
+                    ]
+                }
+                new_cluster['width'] = min_size
+                new_cluster['height'] = min_size
+                new_cluster['area'] = min_size * min_size
+                new_cluster['point_count'] = 1
+                new_cluster['points'] = [{'x': obs['x'], 'y': obs['y']}]
+                clusters.append(new_cluster)
+                
         return clusters
-
+    
     def _scan_loop(self):
         lidar = PyRPlidar()
         attempt = 0

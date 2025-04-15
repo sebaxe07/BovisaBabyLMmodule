@@ -1,7 +1,7 @@
 # config/settings.yaml
 lidar:
   port: "/dev/ttyUSB0"
-  safety_distance: 1 # meters
+  safety_distance: 0.5 # meters
   update_rate: 10 # Hz
   scan_interval: 0.1 # seconds
 

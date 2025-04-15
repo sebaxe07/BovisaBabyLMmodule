@@ -8,6 +8,7 @@ import numpy as np
 import logging
 from utils.colored_logger import log_info, log_error, log_debug
 import threading
+import yaml
 
 # Suppress Flask's default logger
 log = logging.getLogger('werkzeug')
@@ -18,17 +19,36 @@ app = Flask(__name__,
             static_folder='static')
 VERBOSE = False  # Set to True for debugging
 
+# Load settings from YAML file
+def load_settings():
+    log_info("FLASK", "Loading settings from YAML file")
+    try:
+        with open('/home/pi5/BovisaBabyLMmodule/config/settings.yaml', 'r') as file:
+            read = yaml.safe_load(file)
+            log_info("FLASK", f"File loaded: {read['lidar']['safety_distance']}")
+            return read
+    except Exception as e:
+        log_error("FLASK", f"Failed to load settings: {e}")
+        return {}
+    
+settings = load_settings()
+
+
 # Thread-safe data storage with default values
 scan_data = {
     "angles": [0, 90, 180, 270],  # Default values for testing
     "distances": [1.0, 2.0, 3.0, 4.0],  # Default values
     "obstacles": [{"x": 1.0, "y": 0.0}],  # Default obstacle
     "cycle_count": 0,
-    "max_distance": 5.0
+    "max_distance": 5.0,
+    "safety_distance": settings['lidar']['safety_distance']
 }
 data_lock = Lock()
 
 command_publisher = None
+
+
+
 def setup_command_publisher():
     global command_publisher
     context = zmq.Context()

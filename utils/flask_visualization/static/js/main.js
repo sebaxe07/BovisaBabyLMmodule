@@ -67,17 +67,19 @@ document.getElementById('startSearch').addEventListener('click', () => {
 });
 
 // Create safety circle points
-function generateSafetyCircle() {
+function generateSafetyCircle(safetyDistance) {
     const angles = [];
     const distances = [];
     for (let angle = 0; angle <= 360; angle += 5) {
         angles.push(angle);
-        distances.push(1);
+        distances.push(safetyDistance);
     }
     return {angles, distances};
 }
 
-const safetyCircle = generateSafetyCircle();
+
+
+let safetyCircle = generateSafetyCircle(1)
 
 // Create initial empty plot
 Plotly.newPlot(plotDiv, [
@@ -120,11 +122,14 @@ function updatePlot() {
         .then(response => response.json())
         .then(data => {
             // Update status with more details
+            console.log("Data received ", data.obstacles);
             statusDiv.innerHTML = `
                 <strong>Cycle:</strong> ${data.cycle_count} | 
                 <strong>Obstacles:</strong> ${data.obstacles.length} | 
                 <strong>Points:</strong> ${data.distances.length}
             `;
+
+            safetyCircle = generateSafetyCircle(data.safety_distance || 1.0);
 
             // Process obstacles
             const obstacleAngles = data.obstacles.map(obs => 

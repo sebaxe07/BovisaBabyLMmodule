@@ -593,11 +593,11 @@ class CameraClient:
                     #log_info("CAMERA", f"Sent tracking data: x={message['x_position']}, dist={message['distance']}, human_id={message['human_id']}")
 
                 # Wait before sending the next message
-                target_fps = 10  # Adjust based on your needs
-                frame_time = 1.0 / target_fps
-                processing_time = time.time() - current_time
-                sleep_time = max(0, frame_time - processing_time)
-                time.sleep(sleep_time)
+                # target_fps = 10  # Adjust based on your needs
+                # frame_time = 1.0 / target_fps
+                # processing_time = time.time() - current_time
+                # sleep_time = max(0, frame_time - processing_time)
+                # time.sleep(sleep_time)
 
         except Exception as e:
             log_error("CAMERA", f"Main loop error: {e}")
