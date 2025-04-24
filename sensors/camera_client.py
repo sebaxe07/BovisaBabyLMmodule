@@ -1,7 +1,7 @@
 import zmq
 import time
 import random
-from threading import Thread, Event
+from threading import Thread, Event, Lock
 from utils.colored_logger import log_debug, log_info, log_error
 import yaml
 from ultralytics import YOLO
@@ -11,6 +11,7 @@ import copy
 import numpy as np
 from boxmot import ByteTrack  # Faster alternative to DeepSORT
 import torch
+import queue
 
 # filepath: /home/sebas/BovisaBabyLMmodule/sensors/camera_client.py
 
@@ -22,16 +23,38 @@ class CameraClient:
         self.running = False
         self.status = "STOPPED"
         self.streaming = False
-        self.stream_thread = None
+        self.frame_queue = queue.Queue(maxsize=1)  # Store latest frame
+        self.camera_running = False
+        self.camera_lock = Lock()
+        self.confidence_threshold = config['confidence_threshold']
+        
+        # FPS control parameters
+        self.target_fps = config['target_fps']  # Target FPS for tracking
+        self.streaming_fps = config['streaming_fps']  # Target FPS for streaming
+        self.frame_time = 1.0 / self.target_fps  # Target time per frame in seconds
+        self.streaming_frame_time = 1.0 / self.streaming_fps  # Target time for streaming mode
+        self.fps_alpha = 0.1  # EMA smoothing factor for FPS calculation
+        self.current_fps = 0  # Current smoothed FPS
+        self.last_fps_log = 0  # Time of last FPS log
+        log_info("CAMERA", f"Target FPS: {self.target_fps}, Streaming FPS: {self.streaming_fps}")
+        
+        # Frame processing thread events
         self.stream_event = Event()
-
-        torch.set_num_threads(4)  # Use all 4 Pi 5 cores
-        self.model = YOLO(config['model'], task='pose')
-
-        # Default position values for mock camera
+        self.tracking_event = Event()
+        
+        # Default position values for tracking
         self.x_position = -5.0
         self.distance = 2.0
         self.human_id = 1
+        
+        # Initialize distance tracking
+        self.distance_history = []
+        self.max_history = 5  # Keep last 5 measurements
+        self.id_tracked = 0
+
+        # Initialize YOLO model
+        torch.set_num_threads(4)  # Use all 4 Pi 5 cores
+        self.model = YOLO(config['model'], task='pose')
         
         # Video stream publisher
         self.video_publisher = self.context.socket(zmq.PUB)
@@ -46,17 +69,19 @@ class CameraClient:
         self.command_subscriber.connect("tcp://192.168.10.2:5557")
         self.command_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
         
-        # Add synchronization delay or handshake
+        # Add synchronization delay
         time.sleep(0.5)
         log_info("CAMERA", "Waiting for publishers to be ready...")
         time.sleep(0.5)
 
-        # Start video streaming immediately
+        # Start the camera and processing threads
+        self.start_camera()
         self.start_video_streaming()
 
         log_info("CAMERA", "Camera client initialized")
         
     def _init_camera(self, config):
+        """Initialize camera parameters needed for tracking"""
         try:
             # Load camera configuration
             self.known_height = config['known_height']
@@ -65,17 +90,169 @@ class CameraClient:
             self.origin_point_bias = config['origin_point_bias']
             self.debug_visualization = config['debug_visualization']
             log_debug("CAMERA", f"Debug visualization: {self.debug_visualization}")
-            self.distance_history = []
-            self.max_history = 5  # Keep last 5 measurements
-
+            
             # Initialize tracker
             self.tracker = ByteTrack()  # Initialize ByteTrack
             
-            log_info("CAMERA", "Camera initialized successfully")
+            log_info("CAMERA", "Camera tracking parameters initialized successfully")
             
         except Exception as e:
-            log_error("CAMERA", f"Error initializing camera: {e}")
+            log_error("CAMERA", f"Error initializing camera tracking parameters: {e}")
             raise  # Re-raise to be caught in process_commands
+
+    def start_camera(self):
+        """Start the continuous camera capture thread"""
+        if self.camera_running:
+            log_info("CAMERA", "Camera is already running")
+            return
+            
+        log_info("CAMERA", "Starting continuous camera capture")
+        self.camera_running = True
+        self.camera_thread = Thread(target=self._camera_capture_loop)
+        self.camera_thread.daemon = True
+        self.camera_thread.start()
+        time.sleep(1.0)  # Give time for camera to initialize
+        
+    def stop_camera(self):
+        """Stop the camera capture thread"""
+        if not self.camera_running:
+            return
+            
+        log_info("CAMERA", "Stopping camera capture")
+        self.camera_running = False
+        
+        if hasattr(self, 'camera_thread') and self.camera_thread is not None:
+            self.camera_thread.join(timeout=3.0)
+            self.camera_thread = None
+                
+    def _camera_capture_loop(self):
+        """Continuously capture frames from camera and put them in the queue"""
+        log_info("CAMERA", "Starting camera capture loop")
+        
+        # Try to open the camera
+        max_retries = 5
+        retry_count = 0
+        cap = None
+        
+        while retry_count < max_retries and not cap:
+            try:
+                cap = cv2.VideoCapture(0)
+                if not cap.isOpened():
+                    log_error("CAMERA", f"Failed to open camera on try {retry_count+1}/{max_retries}")
+                    retry_count += 1
+                    time.sleep(1.0)  # Wait before retry
+                else:
+                    break
+            except Exception as e:
+                log_error("CAMERA", f"Error opening camera on try {retry_count+1}: {e}")
+                retry_count += 1
+                time.sleep(1.0)  # Wait before retry
+        
+        if not cap or not cap.isOpened():
+            log_error("CAMERA", f"Failed to open camera after {max_retries} attempts")
+            return
+            
+        # Configure camera
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 224)
+        log_info("CAMERA", "Camera successfully opened")
+        
+        # Store camera reference
+        with self.camera_lock:
+            self.cap = cap
+        
+        # FPS variables
+        prev_capture_time = time.time()
+        prev_fps_calc_time = time.time()
+        frame_count = 0
+        fps = 0
+        
+        # Tracking time difference between frames to maintain consistent FPS
+        frame_times = []
+        
+        try:
+            while self.camera_running:
+                current_time = time.time()
+                
+                # Calculate elapsed time since last frame
+                elapsed = current_time - prev_capture_time
+                 
+                # Determine target frame time based on current mode
+                target_time = self.frame_time if self.running else self.streaming_frame_time
+                
+                # Wait if we're going too fast (respect the target framerate)
+                if elapsed < target_time:
+                    sleep_time = target_time - elapsed
+                    time.sleep(sleep_time)
+                    # Recalculate current time after sleep
+                    current_time = time.time()
+                
+                # Read frame from camera
+                ret, frame = cap.read()
+                if not ret:
+                    log_error("CAMERA", "Failed to read frame from camera")
+                    time.sleep(0.5)
+                    continue
+                
+                # Update capture time
+                prev_capture_time = current_time
+                
+                # Update frame counter
+                frame_count += 1
+                
+                # Calculate FPS every second
+                if current_time - prev_fps_calc_time >= 1.0:
+                    # Calculate actual FPS
+                    fps = frame_count / (current_time - prev_fps_calc_time)
+                    
+                    # Apply EMA smoothing to FPS calculation
+                    if self.current_fps == 0:  # First reading
+                        self.current_fps = fps
+                    else:
+                        self.current_fps = (self.fps_alpha * fps) + ((1.0 - self.fps_alpha) * self.current_fps)
+                    
+                    # Log FPS periodically (every 5 seconds)
+                    if current_time - self.last_fps_log >= 5.0:
+                        mode = "TRACKING" if self.running else "STREAMING"
+                        target = self.target_fps if self.running else self.streaming_fps
+                        log_info("CAMERA", f"{mode} mode FPS: {self.current_fps:.1f} (target: {target})")
+                        self.last_fps_log = current_time
+                    
+                    # Reset for next second
+                    frame_count = 0
+                    prev_fps_calc_time = current_time
+                
+                # Create a copy of the frame for processing
+                frame_copy = frame.copy()
+                
+                # Store frame data with metadata
+                frame_data = {
+                    "frame": frame.copy(),  # Original frame without overlays
+                    "display_frame": frame_copy,  # Frame without any text
+                    "fps": self.current_fps,  # Use the smoothed FPS
+                    "timestamp": time.time()
+                }
+                
+                # Update queue with latest frame (replacing old frame if full)
+                if self.frame_queue.full():
+                    try:
+                        self.frame_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                self.frame_queue.put(frame_data)
+                
+        except Exception as e:
+            log_error("CAMERA", f"Camera capture error: {e}")
+            import traceback
+            log_error("CAMERA", traceback.format_exc())
+        
+        finally:
+            # Clean up
+            with self.camera_lock:
+                if cap and cap.isOpened():
+                    cap.release()
+                    self.cap = None
+                    
+        log_info("CAMERA", "Camera capture loop ended")
 
     def start_video_streaming(self):
         """Start continuous video streaming without detection"""
@@ -98,80 +275,66 @@ class CameraClient:
         log_info("CAMERA", "Stopping video streaming")
         self.streaming = False
         self.stream_event.clear()
+        
+        # Wait for thread to terminate with proper timeout
         if self.stream_thread:
+            log_info("CAMERA", "Waiting for video streaming thread to terminate...")
             self.stream_thread.join(timeout=3.0)
             self.stream_thread = None
-            
+
     def _stream_video_loop(self):
-        """Continuous video streaming loop without detection"""
+        """Continuous video streaming loop"""
         log_info("CAMERA", "Starting video streaming loop")
         
-        # Open the camera if not already open
-        try:
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                raise Exception("Failed to open camera for streaming")
-                
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 224)
-            
-            # FPS variables
-            prev_time = 0
-            fps = 0
-            
-            while self.stream_event.is_set():
-                # Read frame from camera
-                ret, frame = cap.read()
-                if not ret:
-                    log_error("CAMERA", "Failed to read frame from camera in streaming loop")
-                    time.sleep(0.5)
-                    continue
-
-                # Calculate FPS
-                current_time = time.time()
-                fps = 1 / (current_time - prev_time)
-                prev_time = current_time
-                
-                # Add FPS and temperature info to frame
-                cpu_temp = self.get_cpu_temperature()
-                cv2.putText(frame, f"FPS: {int(fps)}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                cv2.putText(frame, f"CPU: {cpu_temp:.1f}°C", (10, 70),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                
-                # Add status indicator
-                status_text = "STREAMING" if not self.running else "TRACKING"
-                cv2.putText(frame, status_text, (10, 110),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                
-                # Send the frame over ZMQ
-                self.send_frame(frame)
-                
-                # Sleep to control FPS
-                time.sleep(0.05)  # ~20fps when just streaming
-                
-        except Exception as e:
-            log_error("CAMERA", f"Video streaming error: {e}")
-            import traceback
-            log_error("CAMERA", traceback.format_exc())
-        
-        finally:
-            # Clean up
+        while self.stream_event.is_set():
             try:
-                if cap and cap.isOpened():
-                    cap.release()
+                # Skip processing if tracking is active to avoid duplicate frame sending
+                if self.running:
+                    time.sleep(0.1)  # Short sleep to check again soon
+                    continue
+                    
+                # Get the latest frame
+                try:
+                    frame_data = self.frame_queue.get(timeout=1.0)
+                    frame = frame_data["frame"]  # Get original frame without overlays
+                    fps = frame_data["fps"]
+                    
+                    # Create a copy for adding UI elements
+                    display_frame = frame.copy()
+                    
+                    # Add FPS and temperature info
+                    cpu_temp = self.get_cpu_temperature()
+                    cv2.putText(display_frame, f"FPS: {int(fps)}", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    cv2.putText(display_frame, f"CPU: {cpu_temp:.1f}°C", (10, 70),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    
+                    # Add status indicator (use consistent text)
+                    cv2.putText(display_frame, "STREAMING MODE", (10, 110),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    
+                    # Send the processed frame over ZMQ
+                    self.send_frame(display_frame)
+                    
+                except queue.Empty:
+                    # No frame available
+                    time.sleep(0.1)
+                    continue
+                    
             except Exception as e:
-                log_error("CAMERA", f"Error cleaning up camera in streaming loop: {e}")
+                log_error("CAMERA", f"Video streaming error: {e}")
+                import traceback
+                log_error("CAMERA", traceback.format_exc())
+                time.sleep(0.5)
+            
+            # Sleep to control streaming rate
+            time.sleep(0.05)  # ~20fps when just streaming
                 
         log_info("CAMERA", "Video streaming loop ended")
 
     def send_frame(self, frame):
         """Encode and send a frame over ZMQ for remote visualization"""
         try:
-            # Resize for network efficiency if needed
-            # target_width = 640 
-            # target_height = int(frame.shape[0] * (target_width / frame.shape[1]))
-            # frame = cv2.resize(frame, (target_width, target_height))
-            
             # Encode the frame as JPEG
             _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             
@@ -184,31 +347,63 @@ class CameraClient:
         except Exception as e:
             log_error("CAMERA", f"Error sending frame: {e}")
    
-    def _generate_tracking_data(self):
-        """Generate mock tracking data"""
-        while self.running:
-            # Use the current position values
-            # Create message
-            message = {
-                "type": "TRACKING",
-                "x_position": self.x_position,
-                "distance": self.distance,
-                "human_id": self.human_id
-            }
+    def start_tracking(self):
+        """Start person tracking"""
+        if self.running:
+            log_info("CAMERA", "Tracking is already running")
+            return
+            
+        log_info("CAMERA", "Starting tracking")
+        
+        try:
+            # Initialize tracking parameters if not already done
+            self._init_camera(self.config)
+            
+            # Start tracking
+            self.running = True
+            self.status = "SEARCHING"
+            self.id_tracked = 0
+            self.tracking_event.set()
+            self.tracking_thread = Thread(target=self._tracking_loop)
+            self.tracking_thread.daemon = True
+            self.tracking_thread.start()
+            
+            log_info("CAMERA", "Tracking thread started")
+            
+        except Exception as e:
+            log_error("CAMERA", f"Failed to start tracking: {e}")
+            import traceback
+            log_error("CAMERA", traceback.format_exc())
+            self.running = False
+            self.status = "STOPPED"
+    
+    def stop_tracking(self):
+        """Stop tracking"""
+        if not self.running:
+            return
+            
+        log_info("CAMERA", "Stopping tracking")
+        self.running = False
+        self.tracking_event.clear()
+        
+        # Wait for the thread to terminate
+        if self.tracking_thread:
+            log_info("CAMERA", "Waiting for tracking thread to terminate...")
+            self.tracking_thread.join(timeout=3.0)
+            self.tracking_thread = None
+            
+        # Reset tracking data
+        self.distance_history = []
+        self.id_tracked = 0
+        self.status = "STOPPED"
+        
+        log_info("CAMERA", "Tracking stopped")
 
-            # Send message
-            self.publisher.send_json(message)
-            #log_info("CAMERA", f"Sent tracking data: x={self.x_position}, dist={self.distance}")
-
-            # Wait before sending the next message
-            time.sleep(0.5)
-
-    def cal_x_of_obj(self, position):
+    def cal_x_of_obj(self, position, frame_width=224):
         # Calculate the center of the rectangle
         x_center = (position[0] + position[2]) / 2
         
         # Get the frame center
-        frame_width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
         frame_center = frame_width / 2
 
         if frame_center == 0:
@@ -219,11 +414,285 @@ class CameraClient:
         offset_from_center = x_center - frame_center
         
         # Map to range -10 to 10
-
         scaled_position = (offset_from_center / frame_center) * 10
         
         return scaled_position
+    
+    def _tracking_loop(self):
+        """Process frames for person tracking without controlling the camera"""
+        log_info("CAMERA", "Starting tracking processing loop")
+        
+        # Initialize local variables for tracking
+        min_distance = 10000
+        min_ltrb = [1000] * 4
+        min_track_id = 1000
+        
+        while self.tracking_event.is_set():
+            try:
+                # Get the latest frame
+                try:
+                    frame_data = self.frame_queue.get(timeout=1.0)
+                    frame = frame_data["frame"]  # Get original frame without overlays
+                    fps = frame_data["fps"]
+                except queue.Empty:
+                    # No frame available
+                    time.sleep(0.1)
+                    continue
+                
+                # Create a copy for processing and visualization
+                display_frame = frame.copy()
+                
+                # Get frame dimensions
+                frame_height, frame_width = frame.shape[:2]
+                
+                # Add FPS and temperature info
+                cpu_temp = self.get_cpu_temperature()
+                cv2.putText(display_frame, f"FPS: {int(fps)}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.putText(display_frame, f"CPU: {cpu_temp:.1f}°C", (10, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                
+                # Add status indicator 
+                cv2.putText(display_frame, "TRACKING MODE", (10, 110),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                
+                # Run YOLO Detection
+                results = self.model(frame, imgsz=224, conf=self.confidence_threshold, verbose=False)
+                
+                # Reset tracking variables for this frame
+                min_distance = 10000
+                min_ltrb = [1000] * 4
+                min_track_id = 1000
+                
+                if len(results[0].keypoints) > 0:
+                    detections = []
+                    for i, kpts in enumerate(results[0].keypoints.data):
+                        # Calculate bounding box from keypoints
+                        valid_kpts = kpts[kpts[:, 2] > 0.5]  # Only use keypoints with confidence > 0.5
+                        if len(valid_kpts) > 0:
+                            x1, y1 = valid_kpts[:, 0].min(), valid_kpts[:, 1].min()
+                            x2, y2 = valid_kpts[:, 0].max(), valid_kpts[:, 1].max()
+                            x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+                            conf = float(valid_kpts[:, 2].mean())  # Average confidence
+                            detections.append([x1, y1, x2, y2, conf, 0])  # cls=0 for person
 
+                    # Convert to numpy array for ByteTrack
+                    detections_np = np.array(detections)
+
+                    if len(detections_np) > 0: 
+                        try: 
+                            # ByteTrack Update
+                            tracks = self.tracker.update(detections_np, frame)
+
+                            for track in tracks:
+                                try:
+                                    # ByteTrack returns [x1, y1, x2, y2, track_id, conf, cls, ...]
+                                    x1, y1, x2, y2, track_id = map(int, track[:5])
+                                    ltrb = [x1, y1, x2, y2]
+                                    
+                                    # Calculate distance
+                                    keypoints_for_track = None
+                                    for i, kpts in enumerate(results[0].keypoints.data):
+                                        # Find keypoints that match this track's bounding box
+                                        kpts_x_center = float(kpts[:, 0].mean())
+                                        kpts_y_center = float(kpts[:, 1].mean())
+                                        if (x1 <= kpts_x_center <= x2 and y1 <= kpts_y_center <= y2):
+                                            keypoints_for_track = kpts
+                                            break
+
+                                    # Calculate distance with keypoints
+                                    box_height = y2 - y1
+                                    if keypoints_for_track is not None:
+                                        distance, correction_applied = self.estimate_distance_from_keypoints(
+                                            keypoints_for_track, box_height, y1, y2, frame_height)
+                                    else:
+                                        distance, correction_applied = self.estimate_distance(box_height, y1, y2, frame_height)
+
+                                    # Apply smoothing filter
+                                    self.distance_history.append(distance)
+                                    while len(self.distance_history) > self.max_history:
+                                        self.distance_history.pop(0)
+
+                                    # Use median for stability (more robust to outliers than average)
+                                    if len(self.distance_history) > 1:
+                                        distance = sorted(self.distance_history)[len(self.distance_history)//2]
+                                    
+                                    # Add visual indicator for partial visibility if debugging
+                                    if self.debug_visualization and correction_applied:
+                                        # Add a "PARTIAL" indicator at the top of the bounding box
+                                        cv2.putText(display_frame, "PARTIAL", (x1, y1+10), 
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                                    
+                                    # Check if we are tracking a person
+                                    if self.id_tracked == 0:
+                                        # We are not tracking a person, find the closest one
+                                        if min_distance > distance:
+                                            min_distance = distance
+                                            min_ltrb = copy.copy(ltrb)
+                                            min_track_id = track_id
+                                    else:
+                                        # We are already tracking a person, check if it's the same one
+                                        if track_id == self.id_tracked:
+                                            min_distance = distance
+                                            min_ltrb = copy.copy(ltrb)
+                                            min_track_id = track_id
+
+                                    if self.debug_visualization:
+                                        for i, kpts in enumerate(results[0].keypoints.data):
+                                            # Draw keypoints
+                                            for kp in kpts:
+                                                x, y, conf = kp
+                                                if conf > 0.5:  # Only draw keypoints with confidence > 0.5
+                                                    cv2.circle(display_frame, (int(x), int(y)), 3, (0, 255, 0), -1)
+                                            
+                                            # Draw connections between keypoints (skeleton)
+                                            # COCO keypoint connections
+                                            skeleton = [
+                                                [16, 14], [14, 12], [17, 15], [15, 13], [12, 13], [6, 12], [7, 13], 
+                                                [6, 7], [6, 8], [7, 9], [8, 10], [9, 11], [2, 3], [1, 2], [1, 3], 
+                                                [2, 4], [3, 5], [4, 6], [5, 7]
+                                            ]
+                                            
+                                            for connection in skeleton:
+                                                idx1, idx2 = connection
+                                                try:
+                                                    # Get the connection points
+                                                    con_pts = kpts[[idx1-1, idx2-1]]
+                                                    # Convert tensor min to scalar before boolean comparison
+                                                    min_conf = float(con_pts[:, 2].min())  # Explicit conversion to float
+                                                    if min_conf > 0.5:  # Now a simple float comparison
+                                                        pt1 = (int(con_pts[0, 0]), int(con_pts[0, 1]))
+                                                        pt2 = (int(con_pts[1, 0]), int(con_pts[1, 1]))
+                                                        cv2.line(display_frame, pt1, pt2, (255, 0, 0), 2)
+                                                except Exception as e:
+                                                    # Skip problematic connections silently
+                                                    continue
+                                            
+                                            # Draw bounding box for reference
+                                            color = self.colors[track_id % len(self.colors)]
+                                            cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 1)  # Thinner box
+
+                                    if self.debug_visualization:
+                                        # Draw bounding box and label
+                                        color = self.colors[track_id % len(self.colors)]
+                                        cv2.putText(display_frame,
+                                                f"Person {track_id} ({distance:.2f}m)",
+                                                (x1, y1-10),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                                        
+                                        # Calculate center point
+                                        center_x = (x1 + x2) // 2
+                                        center_y = (y1 + y2) // 2
+                                        
+                                        # Calculate x value using cal_x_of_obj
+                                        x_value = self.cal_x_of_obj(ltrb, frame_width)
+                                        
+                                        if x_value is None:
+                                            log_error("CAMERA", "Failed to calculate x position")
+                                            break
+
+                                        # Draw center point
+                                        cv2.circle(display_frame, (center_x, center_y), 5, (0, 0, 255), -1)  # Red filled circle
+                                        
+                                        # Draw x value
+                                        cv2.putText(display_frame,
+                                                f"x: {x_value:.1f}",
+                                                (center_x + 10, center_y),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                                        
+                                        # Draw LTRB values at respective corners
+                                        font_scale = 0.4
+                                        font_thickness = 1
+                                        # Left
+                                        cv2.putText(display_frame, f"L:{x1}", (x1-5, center_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
+                                        # Top
+                                        cv2.putText(display_frame, f"T:{y1}", (center_x, y1-5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
+                                        # Right
+                                        cv2.putText(display_frame, f"R:{x2}", (x2+5, center_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
+                                        # Bottom
+                                        cv2.putText(display_frame, f"B:{y2}", (center_x, y2+15), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
+
+                                except Exception as e:
+                                    # If any error occurs, reinitialize the tracker
+                                    self.tracker = ByteTrack() 
+                                    log_error("CAMERA", f"Tracking error: {e}")
+                                    message = {
+                                        "type": "NOTFOUND",
+                                        "x_position": 0,
+                                        "distance": 0,
+                                        "human_id": 0
+                                    }
+                                    # Assume we lost the track
+                                    self.id_tracked = 0
+                                    min_distance = 10000
+                                    continue
+                    
+                        except np.linalg.LinAlgError as e:
+                            # Handle numerical stability errors from ByteTrack
+                            log_error("CAMERA", f"ByteTrack numerical stability error: {e}")
+                            # Reset tracker on severe error
+                            self.tracker = ByteTrack()
+                            continue
+                        except Exception as e:
+                            # Handle any other exceptions
+                            log_error("CAMERA", f"Tracking loop error: {e}")
+                            import traceback
+                            log_error("CAMERA", traceback.format_exc())
+
+                # If no tracks are found or none matched our criteria
+                if min_distance == 10000 and self.status == "TRACKING":
+                    # We lost the track
+                    log_error("CAMERA", "Track lost")
+                    message = {
+                        "type": "NOTFOUND",
+                        "x_position": 0,
+                        "distance": 0,
+                        "human_id": 0
+                    }
+                    self.id_tracked = 0
+                    self.status = "LOST"
+                    self.publisher.send_json(message)
+                elif min_distance == 10000 and self.status == "SEARCHING":
+                    # No track found, but we are already searching
+                    message = {
+                        "type": "NOTFOUND",
+                        "x_position": 0,
+                        "distance": 0,
+                        "human_id": 0
+                    }
+                    self.id_tracked = 0
+                    self.publisher.send_json(message)
+                else:
+                    # We found a track
+                    self.status = "TRACKING"
+                    x_value = self.cal_x_of_obj(min_ltrb, frame_width)
+                    if x_value is None:
+                        log_error("CAMERA", "Failed to calculate x position")
+                        continue
+
+                    message = {
+                        "type": "TRACKING",
+                        "x_position": x_value,
+                        "distance": min_distance,
+                        "human_id": min_track_id
+                    }
+                    self.id_tracked = min_track_id
+                    self.publisher.send_json(message)
+
+                # Send the frame with tracking visualizations
+                self.send_frame(display_frame)
+                
+            except Exception as e:
+                log_error("CAMERA", f"Tracking process error: {e}")
+                import traceback
+                log_error("CAMERA", traceback.format_exc())
+                time.sleep(0.5)
+            
+            # Process at a slightly higher rate when tracking
+            time.sleep(0.02)  # ~50fps desired when tracking
+                
+        log_info("CAMERA", "Tracking loop ended")
+        
     def estimate_distance(self, box_height, y1, y2, frame_height=None):
         """
         Estimate distance with compensation for partially visible humans
@@ -234,10 +703,6 @@ class CameraClient:
             y2: Bottom y-coordinate of the bounding box
             frame_height: Height of the camera frame
         """
-        # Get the frame height if not provided
-        if frame_height is None:
-            frame_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        
         # Check if the person is touching bottom edge
         bottom_margin = 10  # Pixels from bottom to consider as "touching edge"
         is_cut_off_bottom = (frame_height - y2 <= bottom_margin)
@@ -323,11 +788,6 @@ class CameraClient:
             has_shoulders = any(s is not None for s in shoulders)
             has_hips = any(h is not None for h in hips)
             has_ankles = any(a is not None for a in ankles)
-            
-            # Get frame height if not provided
-            if frame_height is None:
-                frame_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-            
 
             # Full body visible - use ankle to head distance
             if has_head and has_ankles:
@@ -368,7 +828,7 @@ class CameraClient:
             log_error("CAMERA", f"Keypoint distance estimation error: {e}")
             log_error("CAMERA", traceback.format_exc())
             # Fallback to standard estimation
-            return self.estimate_distance(box_height, y1, y2, frame_height)     
+            return self.estimate_distance(box_height, y1, y2, frame_height)
             
     def get_cpu_temperature(self):
         """Get the Raspberry Pi CPU temperature in Celsius"""
@@ -379,303 +839,10 @@ class CameraClient:
         except Exception as e:
             log_error("CAMERA", f"Failed to read CPU temperature: {e}")
             return 0.0
-    
-
-    def _getting_tracking_data(self):
-        """Getting tracking data from the camera using ByteTrack"""
-        log_info("CAMERA", "Starting tracking loop with ByteTrack")
-        self.id_tracked = 0
-
-        # FPS variables
-        prev_time = 0
-        fps = 0
         
-        # Stop the streaming thread temporarily to access camera
-        self.stop_video_streaming()
-        time.sleep(0.5)  # Give time for streaming to stop
-
-        try: 
-            # Open camera for tracking
-            self.cap = cv2.VideoCapture(0)
-            if not self.cap.isOpened():
-                raise Exception("Failed to open camera for tracking")
-                
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 224)
-            
-            while self.running:
-                # Read frame from camera
-                ret, frame = self.cap.read()
-                if not ret:
-                    log_error("CAMERA", "Failed to read frame from camera")
-                    break
-
-                # Calculate FPS
-                current_time = time.time()
-                fps = 1 / (current_time - prev_time)
-                prev_time = current_time
-
-                # YOLO Detection
-                results = self.model(frame, imgsz=224, conf=self.confidence_threshold, verbose=False)
-                
-                if len(results[0].keypoints) > 0:
-                    detections = []
-                    for i, kpts in enumerate(results[0].keypoints.data):
-                        # Calculate bounding box from keypoints
-                        valid_kpts = kpts[kpts[:, 2] > 0.5]  # Only use keypoints with confidence > 0.5
-                        if len(valid_kpts) > 0:
-                            x1, y1 = valid_kpts[:, 0].min(), valid_kpts[:, 1].min()
-                            x2, y2 = valid_kpts[:, 0].max(), valid_kpts[:, 1].max()
-                            x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-                            conf = float(valid_kpts[:, 2].mean())  # Average confidence
-                            detections.append([x1, y1, x2, y2, conf, 0])  # cls=0 for person
-
-                    # Convert to numpy array for ByteTrack
-                    detections_np = np.array(detections)
-                    min_distance = 10000
-                    min_ltrb = [1000] * 4
-                    min_track_id = 1000
-
-                    if len(detections_np) > 0: 
-                        try: 
-                            # ByteTrack Update
-                            tracks = self.tracker.update(detections_np, frame)
-
-                            for track in tracks:
-                                try:
-                                    # ByteTrack returns [x1, y1, x2, y2, track_id, conf, cls, ...]
-                                    x1, y1, x2, y2, track_id = map(int, track[:5])
-                                    ltrb = [x1, y1, x2, y2]
-                                    
-                                    # Calculate distance
-                                    keypoints_for_track = None
-                                    for i, kpts in enumerate(results[0].keypoints.data):
-                                        # Find keypoints that match this track's bounding box
-                                        kpts_x_center = float(kpts[:, 0].mean())
-                                        kpts_y_center = float(kpts[:, 1].mean())
-                                        if (x1 <= kpts_x_center <= x2 and y1 <= kpts_y_center <= y2):
-                                            keypoints_for_track = kpts
-                                            break
-
-                                    # Calculate distance with keypoints
-                                    box_height = y2 - y1
-                                    frame_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-                                    if keypoints_for_track is not None:
-                                        distance, correction_applied = self.estimate_distance_from_keypoints(
-                                            keypoints_for_track, box_height, y1, y2, frame_height)
-                                    else:
-                                        distance, correction_applied = self.estimate_distance(box_height, y1, y2, frame_height)
-
-
-                                    # Apply smoothing filter
-                                    self.distance_history.append(distance)
-                                    while len(self.distance_history) > self.max_history:
-                                        self.distance_history.pop(0)
-
-                                    # Use median for stability (more robust to outliers than average)
-                                    if len(self.distance_history) > 1:
-                                        distance = sorted(self.distance_history)[len(self.distance_history)//2]
-                                    
-                                    # Add visual indicator for partial visibility if debugging
-                                    if self.debug_visualization and correction_applied:
-                                        # Add a "PARTIAL" indicator at the top of the bounding box
-                                        cv2.putText(frame, "PARTIAL", (x1, y1+10), 
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                                    
-                                    # Check if we are tracking a person
-                                    if self.id_tracked == 0:
-                                        # We are not tracking a person, find the closest one
-                                        if min_distance > distance:
-                                            min_distance = distance
-                                            min_ltrb = copy.copy(ltrb)
-                                            min_track_id = track_id
-                                    else:
-                                        # We are already tracking a person, check if it's the same one
-                                        if track_id == self.id_tracked:
-                                            min_distance = distance
-                                            min_ltrb = copy.copy(ltrb)
-                                            min_track_id = track_id
-
-                                    if self.debug_visualization:
-                                            for i, kpts in enumerate(results[0].keypoints.data):
-                                                # Draw keypoints
-                                                for kp in kpts:
-                                                    x, y, conf = kp
-                                                    if conf > 0.5:  # Only draw keypoints with confidence > 0.5
-                                                        cv2.circle(frame, (int(x), int(y)), 3, (0, 255, 0), -1)
-                                                
-                                                # Draw connections between keypoints (skeleton)
-                                                # COCO keypoint connections
-                                                skeleton = [
-                                                    [16, 14], [14, 12], [17, 15], [15, 13], [12, 13], [6, 12], [7, 13], 
-                                                    [6, 7], [6, 8], [7, 9], [8, 10], [9, 11], [2, 3], [1, 2], [1, 3], 
-                                                    [2, 4], [3, 5], [4, 6], [5, 7]
-                                                ]
-                                                
-                                                for connection in skeleton:
-                                                    idx1, idx2 = connection
-                                                    try:
-                                                        # Get the connection points
-                                                        con_pts = kpts[[idx1-1, idx2-1]]
-                                                        # Convert tensor min to scalar before boolean comparison
-                                                        min_conf = float(con_pts[:, 2].min())  # Explicit conversion to float
-                                                        if min_conf > 0.5:  # Now a simple float comparison
-                                                            pt1 = (int(con_pts[0, 0]), int(con_pts[0, 1]))
-                                                            pt2 = (int(con_pts[1, 0]), int(con_pts[1, 1]))
-                                                            cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
-                                                    except Exception as e:
-                                                        # Skip problematic connections silently
-                                                        continue
-                                                # Still draw bounding box for reference
-                                                x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-                                                color = self.colors[track_id % len(self.colors)] if 'track_id' in locals() else (0, 255, 0)
-                                                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)  # Thinner box
-
-                                    if self.debug_visualization:
-                                        # Draw bounding box and label
-                                        color = self.colors[track_id % len(self.colors)]
-                                        cv2.putText(frame,
-                                                f"Person {track_id} ({distance:.2f}m)",
-                                                (x1, y1-10),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                                        
-                                        # Calculate center point
-                                        center_x = (x1 + x2) // 2
-                                        center_y = (y1 + y2) // 2
-                                        
-                                        # Calculate x value using cal_x_of_obj
-                                        x_value = self.cal_x_of_obj(ltrb)
-                                        
-                                        if x_value is None:
-                                            log_error("CAMERA", "Failed to calculate x position")
-                                            break
-
-                                        # Draw center point
-                                        cv2.circle(frame, (center_x, center_y), 5, (0, 0, 255), -1)  # Red filled circle
-                                        
-                                        # Draw x value
-                                        cv2.putText(frame,
-                                                f"x: {x_value:.1f}",
-                                                (center_x + 10, center_y),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                                        
-                                        # Draw LTRB values at respective corners
-                                        font_scale = 0.4
-                                        font_thickness = 1
-                                        # Left
-                                        cv2.putText(frame, f"L:{x1}", (x1-5, center_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
-                                        # Top
-                                        cv2.putText(frame, f"T:{y1}", (center_x, y1-5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
-                                        # Right
-                                        cv2.putText(frame, f"R:{x2}", (x2+5, center_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
-                                        # Bottom
-                                        cv2.putText(frame, f"B:{y2}", (center_x, y2+15), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
-
-                                except Exception as e:
-                                    # If any error occurs, reinitialize the tracker
-                                    self.tracker = ByteTrack() 
-                                    log_error("CAMERA", f"Tracking error: {e}")
-                                    message = {
-                                        "type": "NOTFOUND",
-                                        "x_position": 0,
-                                        "distance": 0,
-                                        "human_id": 0
-                                    }
-                                    # Assume we lost the track
-                                    self.id_tracked = 0
-                                    min_distance = 10000
-                                    continue
-                    
-                        except np.linalg.LinAlgError as e:
-                            # Handle numerical stability errors from ByteTrack
-                            log_error("CAMERA", f"ByteTrack numerical stability error: {e}")
-                            # Reset tracker on severe error
-                            self.tracker = ByteTrack()
-                            continue
-                        except Exception as e:
-                            # Handle any other exceptions
-                            log_error("CAMERA", f"Tracking loop error: {e}")
-                            import traceback
-                            log_error("CAMERA", traceback.format_exc())
-
-                    # If no tracks are found or none matched our criteria
-                    if min_distance == 10000 and self.status == "TRACKING":
-                        # We lost the track
-                        log_error("CAMERA", "Track lost")
-                        message = {
-                            "type": "NOTFOUND",
-                            "x_position": 0,
-                            "distance": 0,
-                            "human_id": 0
-                        }
-                        self.id_tracked = 0
-                        self.status = "LOST"
-                    elif min_distance == 10000 and self.status == "SEARCHING":
-                        # No track found, but we are already searching
-                        message = {
-                            "type": "NOTFOUND",
-                            "x_position": 0,
-                            "distance": 0,
-                            "human_id": 0
-                        }
-                        self.id_tracked = 0
-                    else:
-                        # We found a track
-                        self.status = "TRACKING"
-                        x_value = self.cal_x_of_obj(min_ltrb)
-                        if x_value is None:
-                            log_error("CAMERA", "Failed to calculate x position")
-                            break
-
-                        message = {
-                            "type": "TRACKING",
-                            "x_position": x_value,
-                            "distance": min_distance,
-                            "human_id": min_track_id
-                        }
-                        # log_info("CAMERA", f"Found track: {min_track_id} at distance {min_distance:.2f}m at position {x_value:.1f}")
-                        self.id_tracked = min_track_id
-
-                else:
-                    message = {
-                        "type": "NOTFOUND",
-                        "x_position": 0,
-                        "distance": 0,
-                        "human_id": 0
-                    } 
-                    self.id_tracked = 0
-
-                # Add a label to indicate we're in tracking mode
-                cv2.putText(frame, "TRACKING MODE", (10, 110),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-
-                # Send the frame regardless of whether we're showing debug visualization
-                self.send_frame(frame)
-                
-                # Sleep to control FPS if needed
-                # time.sleep(0.01)  # Minimal sleep to prevent CPU overload
-
-        except Exception as e:
-            log_error("CAMERA", f"Main loop error: {e}")
-            import traceback
-            log_error("CAMERA", traceback.format_exc())
-        
-        # Clean up
-        try:
-            if hasattr(self, 'cap') and self.cap is not None and self.running:
-                self.cap.release()
-                self.cap = None
-        except Exception as e:
-            log_error("CAMERA", f"Error cleaning up camera in tracking loop: {e}")
-        
-        # Restart streaming
-        self.start_video_streaming()
-        
-        log_info("CAMERA", "Tracking loop ended")
-
     def process_commands(self):
         """Process incoming commands and control the camera"""
         log_info("CAMERA", "Starting command processing loop")
-        self.is_first_run = True
 
         while True:
             try:
@@ -685,55 +852,13 @@ class CameraClient:
 
                 if cmd['command'] == "SEARCH":
                     if not self.running:
-                        log_info("CAMERA", "Starting tracking")     
-
-                        # Initialize camera configs needed for tracking
-                        try:
-                            # Initialize camera parameters
-                            self._init_camera(self.config)
-                            
-                            # Stop streaming thread to take over camera
-                            self.stop_video_streaming()
-                            time.sleep(0.5)  # Give time for streaming to stop
-                            
-                            # Start tracking
-                            self.running = True
-                            self.tracking_thread = Thread(target=self._getting_tracking_data)
-                            self.tracking_thread.daemon = True
-                            self.tracking_thread.start()
-                            log_info("CAMERA", "Tracking thread started")
-                        except Exception as e:
-                            log_error("CAMERA", f"Failed to start tracking: {e}")
-                            import traceback
-                            log_error("CAMERA", traceback.format_exc())
-                            self.running = False
-                            
-                            # Restart streaming
-                            self.start_video_streaming()
-
+                        # Start tracking mode (detection processing)
+                        self.start_tracking()
+                        
                 elif cmd['command'] == "STOP":
                     if self.running:
-                        log_info("CAMERA", "Stopping tracking")
-                        self.running = False
-                        
-                        # Wait for the thread to finish processing
-                        time.sleep(1.0)  # Longer wait time
-                        
-                        # Make sure thread is terminated
-                        if hasattr(self, 'tracking_thread') and self.tracking_thread is not None:
-                            log_info("CAMERA", "Waiting for tracking thread to terminate...")
-                            self.tracking_thread.join(timeout=3.0)
-                            self.tracking_thread = None
-                        
-                        # Reset tracking data
-                        self.distance_history = []
-                        self.id_tracked = 0
-                        
-                        # Ensure streaming is restarted
-                        if not self.streaming:
-                            self.start_video_streaming()
-                        
-                        log_info("CAMERA", "Tracking stopped, streaming video continues")
+                        # Stop tracking mode (but keep camera running)
+                        self.stop_tracking()
 
             except zmq.Again:
                 pass
@@ -743,23 +868,18 @@ class CameraClient:
     def cleanup(self):
         """Clean up resources before exit"""
         log_info("CAMERA", "Cleaning up resources")
-        self.running = False
-        self.streaming = False
-        self.stream_event.clear()
         
-        # Make sure to join all threads
-        if hasattr(self, 'tracking_thread') and self.tracking_thread is not None:
-            self.tracking_thread.join(timeout=1.0)
+        # Stop tracking if running
+        if self.running:
+            self.stop_tracking()
+        
+        # Stop video streaming
+        if self.streaming:
+            self.stop_video_streaming()
             
-        if hasattr(self, 'stream_thread') and self.stream_thread is not None:
-            self.stream_thread.join(timeout=1.0)
-        
-        # Close the camera if it's still open
-        try:
-            if hasattr(self, 'cap') and self.cap is not None:
-                self.cap.release()
-        except:
-            pass
+        # Stop camera capture
+        if self.camera_running:
+            self.stop_camera()
             
         # Close ZMQ resources
         if hasattr(self, 'video_publisher'):

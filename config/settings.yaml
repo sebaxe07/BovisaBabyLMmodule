@@ -41,3 +41,5 @@ camera:
   max_age: 15
   confidence_threshold: 0.5
   debug_visualization: true
+  target_fps: 10  # Target FPS to maintain for consistent performance
+  streaming_fps: 30  # Target FPS when in streaming mode (not tracking)
