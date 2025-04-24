@@ -210,7 +210,7 @@ def camera_data_listener():
     """Listen for camera tracking data"""
     context = zmq.Context()
     camera_subscriber = context.socket(zmq.SUB)
-    camera_subscriber.connect("tcp://localhost:5558")
+    camera_subscriber.connect("tcp://192.168.10.1:5558")
     camera_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
     
     log_info("FLASK", "Camera subscriber connected to camera data stream")
@@ -262,7 +262,7 @@ def video_stream_listener():
     """Listen for video stream frames from camera client"""
     context = zmq.Context()
     video_subscriber = context.socket(zmq.SUB)
-    video_subscriber.connect("tcp://localhost:5559")  # Connect to camera's video port
+    video_subscriber.connect("tcp://192.168.10.1:5559")  # Connect to camera's video port
     video_subscriber.setsockopt(zmq.SUBSCRIBE, b"frame")  # Use setsockopt for bytes
     
     log_info("FLASK", "Video subscriber connected to camera video stream")
