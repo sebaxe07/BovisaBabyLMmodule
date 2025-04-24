@@ -1,7 +1,7 @@
 import zmq
 import time
 import random
-from threading import Thread
+from threading import Thread, Event
 from utils.colored_logger import log_debug, log_info, log_error
 import yaml
 from ultralytics import YOLO
@@ -21,6 +21,9 @@ class CameraClient:
         self.context = zmq.Context()
         self.running = False
         self.status = "STOPPED"
+        self.streaming = False
+        self.stream_thread = None
+        self.stream_event = Event()
 
         torch.set_num_threads(4)  # Use all 4 Pi 5 cores
         self.model = YOLO(config['model'], task='pose')
@@ -48,7 +51,8 @@ class CameraClient:
         log_info("CAMERA", "Waiting for publishers to be ready...")
         time.sleep(0.5)
 
-
+        # Start video streaming immediately
+        self.start_video_streaming()
 
         log_info("CAMERA", "Camera client initialized")
         
@@ -64,25 +68,8 @@ class CameraClient:
             self.distance_history = []
             self.max_history = 5  # Keep last 5 measurements
 
-            # Release camera if it's already open
-            if hasattr(self, 'cap') and self.cap is not None:
-                try:
-                    self.cap.release()
-                    time.sleep(0.5)  # Give it time to fully release
-                except:
-                    pass
-
             # Initialize tracker
             self.tracker = ByteTrack()  # Initialize ByteTrack
-            
-            # Try to open camera
-            self.cap = cv2.VideoCapture(0)
-            if not self.cap.isOpened():
-                raise Exception("Failed to open camera")
-                
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 224) 
-            self.confidence_threshold = config['confidence_threshold']
-            self.id_tracked = 0
             
             log_info("CAMERA", "Camera initialized successfully")
             
@@ -90,6 +77,92 @@ class CameraClient:
             log_error("CAMERA", f"Error initializing camera: {e}")
             raise  # Re-raise to be caught in process_commands
 
+    def start_video_streaming(self):
+        """Start continuous video streaming without detection"""
+        if self.streaming:
+            log_info("CAMERA", "Video streaming is already running")
+            return
+            
+        log_info("CAMERA", "Starting video streaming")
+        self.streaming = True
+        self.stream_event.set()
+        self.stream_thread = Thread(target=self._stream_video_loop)
+        self.stream_thread.daemon = True
+        self.stream_thread.start()
+        
+    def stop_video_streaming(self):
+        """Stop the video streaming"""
+        if not self.streaming:
+            return
+            
+        log_info("CAMERA", "Stopping video streaming")
+        self.streaming = False
+        self.stream_event.clear()
+        if self.stream_thread:
+            self.stream_thread.join(timeout=3.0)
+            self.stream_thread = None
+            
+    def _stream_video_loop(self):
+        """Continuous video streaming loop without detection"""
+        log_info("CAMERA", "Starting video streaming loop")
+        
+        # Open the camera if not already open
+        try:
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                raise Exception("Failed to open camera for streaming")
+                
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 224)
+            
+            # FPS variables
+            prev_time = 0
+            fps = 0
+            
+            while self.stream_event.is_set():
+                # Read frame from camera
+                ret, frame = cap.read()
+                if not ret:
+                    log_error("CAMERA", "Failed to read frame from camera in streaming loop")
+                    time.sleep(0.5)
+                    continue
+
+                # Calculate FPS
+                current_time = time.time()
+                fps = 1 / (current_time - prev_time)
+                prev_time = current_time
+                
+                # Add FPS and temperature info to frame
+                cpu_temp = self.get_cpu_temperature()
+                cv2.putText(frame, f"FPS: {int(fps)}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.putText(frame, f"CPU: {cpu_temp:.1f}°C", (10, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                
+                # Add status indicator
+                status_text = "STREAMING" if not self.running else "TRACKING"
+                cv2.putText(frame, status_text, (10, 110),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                
+                # Send the frame over ZMQ
+                self.send_frame(frame)
+                
+                # Sleep to control FPS
+                time.sleep(0.05)  # ~20fps when just streaming
+                
+        except Exception as e:
+            log_error("CAMERA", f"Video streaming error: {e}")
+            import traceback
+            log_error("CAMERA", traceback.format_exc())
+        
+        finally:
+            # Clean up
+            try:
+                if cap and cap.isOpened():
+                    cap.release()
+            except Exception as e:
+                log_error("CAMERA", f"Error cleaning up camera in streaming loop: {e}")
+                
+        log_info("CAMERA", "Video streaming loop ended")
 
     def send_frame(self, frame):
         """Encode and send a frame over ZMQ for remote visualization"""
@@ -197,7 +270,6 @@ class CameraClient:
         distance = (self.known_height * self.focal_length) / corrected_height
         
         return distance, True
-        
 
     def estimate_distance_from_keypoints(self, keypoints, box_height, y1, y2, frame_height=None):
         # YOLOv8 pose keypoint indices
@@ -317,16 +389,25 @@ class CameraClient:
         # FPS variables
         prev_time = 0
         fps = 0
+        
+        # Stop the streaming thread temporarily to access camera
+        self.stop_video_streaming()
+        time.sleep(0.5)  # Give time for streaming to stop
 
         try: 
+            # Open camera for tracking
+            self.cap = cv2.VideoCapture(0)
+            if not self.cap.isOpened():
+                raise Exception("Failed to open camera for tracking")
+                
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 224)
+            
             while self.running:
-
                 # Read frame from camera
                 ret, frame = self.cap.read()
                 if not ret:
                     log_error("CAMERA", "Failed to read frame from camera")
                     break
-
 
                 # Calculate FPS
                 current_time = time.time()
@@ -335,6 +416,7 @@ class CameraClient:
 
                 # YOLO Detection
                 results = self.model(frame, imgsz=224, conf=self.confidence_threshold, verbose=False)
+                
                 if len(results[0].keypoints) > 0:
                     detections = []
                     for i, kpts in enumerate(results[0].keypoints.data):
@@ -368,8 +450,8 @@ class CameraClient:
                                     keypoints_for_track = None
                                     for i, kpts in enumerate(results[0].keypoints.data):
                                         # Find keypoints that match this track's bounding box
-                                        kpts_x_center = float(kpts[:, 0].mean())  # Add float() here
-                                        kpts_y_center = float(kpts[:, 1].mean())  # Add float() here
+                                        kpts_x_center = float(kpts[:, 0].mean())
+                                        kpts_y_center = float(kpts[:, 1].mean())
                                         if (x1 <= kpts_x_center <= x2 and y1 <= kpts_y_center <= y2):
                                             keypoints_for_track = kpts
                                             break
@@ -489,6 +571,7 @@ class CameraClient:
                                         cv2.putText(frame, f"B:{y2}", (center_x, y2+15), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0), font_thickness)
 
                                 except Exception as e:
+                                    # If any error occurs, reinitialize the tracker
                                     self.tracker = ByteTrack() 
                                     log_error("CAMERA", f"Tracking error: {e}")
                                     message = {
@@ -503,11 +586,13 @@ class CameraClient:
                                     continue
                     
                         except np.linalg.LinAlgError as e:
+                            # Handle numerical stability errors from ByteTrack
                             log_error("CAMERA", f"ByteTrack numerical stability error: {e}")
                             # Reset tracker on severe error
                             self.tracker = ByteTrack()
                             continue
                         except Exception as e:
+                            # Handle any other exceptions
                             log_error("CAMERA", f"Tracking loop error: {e}")
                             import traceback
                             log_error("CAMERA", traceback.format_exc())
@@ -559,45 +644,15 @@ class CameraClient:
                     } 
                     self.id_tracked = 0
 
-                if self.debug_visualization:
-                    # Display FPS on frame
-                    # Get CPU temperature
-                    cpu_temp = self.get_cpu_temperature()
-        
-                    # Display FPS and temperature on frame
-                    cv2.putText(frame, f"FPS: {int(fps)}", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                # Add a label to indicate we're in tracking mode
+                cv2.putText(frame, "TRACKING MODE", (10, 110),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+                # Send the frame regardless of whether we're showing debug visualization
+                self.send_frame(frame)
                 
-                    cv2.putText(frame, f"CPU: {cpu_temp:.1f}°C", (10, 70),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
-                    #cv2.imshow("Human Tracking", frame)
-                    self.send_frame(frame)  # Send frame to publisher
-
-                    if cv2.waitKey(1) == ord('q'):
-                        log_debug("CAMERA", "Exiting debug visualization loop")
-                        self.running = False
-                        break
-                #else:
-                    #log_info("CAMERA", f"FPS: {int(fps)}, CPU: {self.get_cpu_temperature():.1f}°C")          
-                    
-                # Send message to publisher one time if we lost the track or constant updates if we are tracking
-                if self.status == "LOST":
-                    # Send message
-                    self.publisher.send_json(message)
-                    #log_info("CAMERA", f"Sent tracking data: x={message['x_position']}, dist={message['distance']}, human_id={message['human_id']}")
-                    # Reset status
-                    self.status = "SEARCHING"
-                elif self.status == "TRACKING":
-                    self.publisher.send_json(message)
-                    #log_info("CAMERA", f"Sent tracking data: x={message['x_position']}, dist={message['distance']}, human_id={message['human_id']}")
-
-                # Wait before sending the next message
-                # target_fps = 10  # Adjust based on your needs
-                # frame_time = 1.0 / target_fps
-                # processing_time = time.time() - current_time
-                # sleep_time = max(0, frame_time - processing_time)
-                # time.sleep(sleep_time)
+                # Sleep to control FPS if needed
+                # time.sleep(0.01)  # Minimal sleep to prevent CPU overload
 
         except Exception as e:
             log_error("CAMERA", f"Main loop error: {e}")
@@ -611,13 +666,11 @@ class CameraClient:
                 self.cap = None
         except Exception as e:
             log_error("CAMERA", f"Error cleaning up camera in tracking loop: {e}")
-        # Just in case it crashes or something
-        self.running = False
-        if self.debug_visualization:
-            cv2.destroyAllWindows()
+        
+        # Restart streaming
+        self.start_video_streaming()
         
         log_info("CAMERA", "Tracking loop ended")
-
 
     def process_commands(self):
         """Process incoming commands and control the camera"""
@@ -634,51 +687,29 @@ class CameraClient:
                     if not self.running:
                         log_info("CAMERA", "Starting tracking")     
 
-
-                        # First, ensure any existing resources are fully cleaned up
+                        # Initialize camera configs needed for tracking
                         try:
-                            if hasattr(self, 'cap') and self.cap is not None:
-                                log_info("CAMERA", "Releasing old camera handle")
-                                self.cap.release()
-                                self.cap = None
-                                time.sleep(1.0)  # Give system time to fully release
-                        except Exception as e:
-                            log_error("CAMERA", f"Error cleaning up old camera: {e}")
-                        
-                        # Now try to initialize the camera
-                        try:
-                            # Initialize camera
-                            log_info("CAMERA", "Initializing camera...")
+                            # Initialize camera parameters
                             self._init_camera(self.config)
                             
-                            # if not self.is_first_run:
-                            #     log_info("CAMERA", "Disabling visualization for non-first run")
-                            #     self.debug_visualization = False
-                            # else:
-                            #     self.is_first_run = False
-                            # Test if camera is actually working
-                            ret, _ = self.cap.read()
-                            if not ret:
-                                raise Exception("Camera read test failed")
+                            # Stop streaming thread to take over camera
+                            self.stop_video_streaming()
+                            time.sleep(0.5)  # Give time for streaming to stop
                             
-                            log_info("CAMERA", "Camera is working, starting tracking thread")
+                            # Start tracking
                             self.running = True
                             self.tracking_thread = Thread(target=self._getting_tracking_data)
                             self.tracking_thread.daemon = True
                             self.tracking_thread.start()
                             log_info("CAMERA", "Tracking thread started")
                         except Exception as e:
-                            log_error("CAMERA", f"Failed to start camera: {e}")
+                            log_error("CAMERA", f"Failed to start tracking: {e}")
                             import traceback
                             log_error("CAMERA", traceback.format_exc())
                             self.running = False
-                            # Try to release camera if it was partially initialized
-                            try:
-                                if hasattr(self, 'cap') and self.cap is not None:
-                                    self.cap.release()
-                                    self.cap = None
-                            except:
-                                pass
+                            
+                            # Restart streaming
+                            self.start_video_streaming()
 
                 elif cmd['command'] == "STOP":
                     if self.running:
@@ -687,17 +718,7 @@ class CameraClient:
                         
                         # Wait for the thread to finish processing
                         time.sleep(1.0)  # Longer wait time
-
-                        # release camera resources
-                        try:
-                            if hasattr(self, 'cap') and self.cap is not None:
-                                log_info("CAMERA", "Releasing camera...")
-                                self.cap.release()
-                                self.cap = None
-                                log_info("CAMERA", "Camera released")
-                        except Exception as e:
-                            log_error("CAMERA", f"Error releasing camera: {e}")
-            
+                        
                         # Make sure thread is terminated
                         if hasattr(self, 'tracking_thread') and self.tracking_thread is not None:
                             log_info("CAMERA", "Waiting for tracking thread to terminate...")
@@ -708,7 +729,11 @@ class CameraClient:
                         self.distance_history = []
                         self.id_tracked = 0
                         
-                        log_info("CAMERA", "Camera stopped and resources cleaned up")
+                        # Ensure streaming is restarted
+                        if not self.streaming:
+                            self.start_video_streaming()
+                        
+                        log_info("CAMERA", "Tracking stopped, streaming video continues")
 
             except zmq.Again:
                 pass
@@ -719,9 +744,31 @@ class CameraClient:
         """Clean up resources before exit"""
         log_info("CAMERA", "Cleaning up resources")
         self.running = False
-        self.cap.release()
-        # if self.debug_visualization:
-        #     cv2.destroyAllWindows()
-        if  hasattr(self, 'video_publisher'):
-           self.video_publisher.close()
+        self.streaming = False
+        self.stream_event.clear()
+        
+        # Make sure to join all threads
+        if hasattr(self, 'tracking_thread') and self.tracking_thread is not None:
+            self.tracking_thread.join(timeout=1.0)
+            
+        if hasattr(self, 'stream_thread') and self.stream_thread is not None:
+            self.stream_thread.join(timeout=1.0)
+        
+        # Close the camera if it's still open
+        try:
+            if hasattr(self, 'cap') and self.cap is not None:
+                self.cap.release()
+        except:
+            pass
+            
+        # Close ZMQ resources
+        if hasattr(self, 'video_publisher'):
+            self.video_publisher.close()
+            
+        if hasattr(self, 'publisher'):
+            self.publisher.close()
+            
+        if hasattr(self, 'command_subscriber'):
+            self.command_subscriber.close()
+            
         self.context.term()
