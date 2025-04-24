@@ -9,7 +9,6 @@ import zmq
 import time
 from motor.arduino_interface import ArduinoInterface
 from sensors.lidar_processor import LidarProcessor
-from sensors.camera_client import CameraClient
 from utils.colored_logger import log_info, log_error, log_debug
 
 class MainController:
@@ -19,7 +18,7 @@ class MainController:
         self.arduino = ArduinoInterface(config['arduino'])
         self._setup_communication()
         self._setup_lidar()
-        self._setup_camera()
+        # Camera is now on a different device, no need to set it up locally
         self.current_state = "IDLE"
         self.target_direction = None
         self.target_distance = None
@@ -42,13 +41,13 @@ class MainController:
 
         # Add subscription for camera tracking data
         self.camera_subscriber = context.socket(zmq.SUB)
-        self.camera_subscriber.connect("tcp://localhost:5558")
+        self.camera_subscriber.connect("tcp://192.168.10.1:5558")
         self.camera_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
         log_info("CONTROLLER", "Connected to camera data channel on port 5558")
         
         # Create publisher for camera commands
         self.camera_command_publisher = context.socket(zmq.PUB)
-        self.camera_command_publisher.bind("tcp://*:5557")
+        self.camera_command_publisher.bind("tcp://192.168.10.2:5557")
         log_info("CONTROLLER", "Created camera command channel on port 5557")
 
     def _setup_lidar(self):
@@ -69,25 +68,6 @@ class MainController:
         # Give the LIDAR processor a moment to start
         time.sleep(1.0)
         log_info("CONTROLLER", "LIDAR processor started")
-
-    def _setup_camera(self):
-        """Start camera processing in a separate thread"""
-        log_info("CONTROLLER", "Starting camera processor")
-        def run_camera():
-            camera = CameraClient(self.config['camera'])
-            camera.process_commands()
-            # Store reference to allow clean shutdown later
-            self.camera_client = camera
-        
-        # Start in a daemon thread so it exits when the main program exits
-        self.camera_thread = Thread(target=run_camera)
-        self.camera_thread.daemon = True
-        self.camera_thread.start()
-
-        # Give the camera processor a moment to start
-        time.sleep(1.0)
-        log_info("CONTROLLER", "Camera processor started")
-
 
     def _avoidance_strategy(self, obstacles):
         """Simple obstacle avoidance logic"""

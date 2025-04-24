@@ -569,7 +569,7 @@ def camera_data_listener():
     """Listen for camera tracking data"""
     context = zmq.Context()
     camera_subscriber = context.socket(zmq.SUB)
-    camera_subscriber.connect("tcp://localhost:5558")
+    camera_subscriber.connect("tcp://192.168.10.1:5558")
     camera_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
     
     log_info("FLASK", "Camera subscriber connected to camera data stream")
