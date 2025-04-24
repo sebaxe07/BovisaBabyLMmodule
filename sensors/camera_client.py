@@ -32,15 +32,15 @@ class CameraClient:
         
         # Video stream publisher
         self.video_publisher = self.context.socket(zmq.PUB)
-        self.video_publisher.bind("tcp://*:5559")  # New port for video stream
+        self.video_publisher.bind("tcp://192.168.10.1:5559")
         log_info("CAMERA", "Video publisher initialized on port 5559")
         
         self.publisher = self.context.socket(zmq.PUB)
-        self.publisher.bind("tcp://*:5558")
+        self.publisher.bind("tcp://192.168.10.1:5558")
        
         # Setup communication sockets
         self.command_subscriber = self.context.socket(zmq.SUB)
-        self.command_subscriber.connect("tcp://localhost:5557")
+        self.command_subscriber.connect("tcp://192.168.10.2:5557")
         self.command_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
         
         # Add synchronization delay or handshake
