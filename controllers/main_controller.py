@@ -174,21 +174,11 @@ class MainController:
                             log_info("CONTROLLER", "Stopping due to close target")
                             continue
                         
-                        # Determine direction based on position
-                        if self.target_position > tolerance:
-                            self.target_direction = "right"
-                        elif self.target_position < -tolerance:
-                            self.target_direction = "left"
-                        else:
-                            self.target_direction = "forward"
+
                         
                         # Only send command if time elapsed and direction changed
-                        if (current_time - last_command_time > throttle_interval and 
-                            self.target_direction != last_direction):
-                            self.arduino.send_command(self.target_direction)
-                            last_command_time = current_time
-                            last_direction = self.target_direction 
-                            log_info("CONTROLLER", f"Sent command: {self.target_direction }")
+                        self.arduino.send_command(self.target_position)
+                        log_info("CONTROLLER", f"Sent command: {self.target_direction }")
                 
                     elif camera_msg['type'] == 'NOTFOUND' and not not_found:
                         # We lost track of the human or not found

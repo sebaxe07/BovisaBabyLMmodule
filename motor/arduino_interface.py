@@ -2,7 +2,7 @@ import smbus
 import time
 import logging
 from threading import Thread, Event
-
+import struct 
 from smbus2 import SMBus
 from utils.colored_logger import log_info, log_error, log_debug
 
@@ -69,19 +69,27 @@ class ArduinoInterface:
             # Sleep to avoid hogging CPU
             time.sleep(0.1)
 
-    def send_int(self, value):
+    def send_string(self, text):
+        """Send a string value to the Arduino via I2C."""
+        # Convert string to bytes
+        string_bytes = bytearray(text.encode('utf-8'))
+        # Limit to a reasonable length if needed (Arduino buffer size considerations)
+        if len(string_bytes) > 32:  # 32 bytes is a common I2C buffer size
+            string_bytes = string_bytes[:32]
+        
         with SMBus(1) as bus:
             try:
-                bus.write_byte(self.address, value)
-                log_info("ARDUINO", f"Raspberry Pi sent: {value} to Arduino at address 0x{self.address:02X}")
+                # Send string as a block of bytes
+                log_debug("ARDUINO", f"Sending string bytes: {list(string_bytes)}")
+                bus.write_i2c_block_data(self.address, 0, list(string_bytes))
+                log_info("ARDUINO", f"Sent string: '{text}' to Arduino at address 0x{self.address:02X}")
             except Exception as e:
-                log_error("ARDUINO", f"Error sending data: {e}")
-
+                log_error("ARDUINO", f"Error sending string data: {e}")
 
     def _initialize_arduino(self):
         """Send an initialization signal to the Arduino."""
         try:
-            self.send_int(0)  # Send stop command to Arduino
+            self.send_string("100.0")  # Send stop command to Arduino
             time.sleep(0.1)  # Allow Arduino to process
         except Exception as e:
             self.logger.error(f"Error initializing Arduino: {e}")
@@ -89,36 +97,59 @@ class ArduinoInterface:
     def send_command(self, command):
         """
         Send a movement command to the Arduino.
-        Commands are represented as integers:
-        0 = stop, 1 = forward, 2 = backward, 3 = left, 4 = right, 10 = found.
+        Commands can be:
+        - Float values from -10.0 to 10.0 (will be converted to strings)
+        - String values: "stop", "found", "left", "right", "forward", "backward"
         """
         log_info("ARDUINO", f"Receiving command: {command}")
 
-        if isinstance(command, str):
+        # Handle float commands by converting to string
+        if isinstance(command, float):
+            if -10.0 <= command <= 10.0:
+                # Convert float to string with specified precision
+                command_str = f"{command:.2f}"
+                if self.mock_mode:
+                    log_info("ARDUINO", f"Mock mode - setting float command to {command}")
+                    self.mock_state['command'] = command
+                else:
+                    try:
+                        log_info("ARDUINO", f"Sending float as string command: {command_str}")
+                        self.send_string(command_str)
+                    except Exception as e:
+                        log_error("ARDUINO", f"Error sending float command: {e}")
+            else:
+                log_error("ARDUINO", f"Invalid float value: {command}. Defaulting to stop.")
+                command = "stop"
+        
+        # Handle string commands
+        
+        # Handle string commands
+        elif isinstance(command, str):
             command_map = {
-                "stop": 0,
-                "forward": 1,
-                "backward": 2,
-                "left": 3,
-                "right": 4,
-                "found": 10
+                "stop": 100.0,
+                "found": 101.0,
+                "left": 102.0,
+                "right": 103.0,
+                "forward": 104.0,
+                "backward": 105.0,
             }
-            command = command_map.get(command.lower(), 0)  # Default to stop if invalid
+            command = command_map.get(command.lower(), 100.0)  # Default to stop if invalid
+            command_str = f"{command:.2f}"
+
+            if self.mock_mode:
+                log_info("ARDUINO", f"Mock mode - setting command to {command}")
+                self.mock_state['command'] = command
+            else:
+                try:
+                    log_info("ARDUINO", f"Sending command {command} to Arduino")
+                    self.send_string(command_str)
+                except Exception as e:
+                    log_error("ARDUINO", f"Error sending command: {e}")
             
-        if command not in range(11):  # Validate command range
-            log_error("ARDUINO", f"Invalid command: {command}. Defaulting to stop.")
-            command = 0
-            
-        if self.mock_mode:
-            log_info("ARDUINO", f"Mock mode - setting command to {command}")
-            self.mock_state['command'] = command
         else:
-            try:
-                log_info("ARDUINO", f"Sending command {command} to Arduino")
-                self.send_int(command)
-            except Exception as e:
-                log_error("ARDUINO", f"Error sending command to Arduino: {e}")
-                
+            log_error("ARDUINO", f"Unsupported command type: {type(command)}. Ignoring.")
+
+           
     def get_sensor_data(self):
         """
         Get sensor readings from Arduino.
