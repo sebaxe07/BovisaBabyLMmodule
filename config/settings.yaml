@@ -1,5 +1,6 @@
 # config/settings.yaml
 lidar:
+  mock_mode: true
   port: "/dev/ttyUSB0"
   safety_distance: 0.5 # meters
   update_rate: 10 # Hz
@@ -8,7 +9,7 @@ lidar:
 arduino:
   bus_number: 1  # I2C bus number for hardware mode
   I2C_ADDRESS: 0x08  # I2C address for hardware mode
-  mock_mode: false
+  mock_mode: true
   mock_settings:
     battery_initial: 12.0  # volts
     battery_drain_rate: 0.0001  # volts/update

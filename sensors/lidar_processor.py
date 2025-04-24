@@ -263,6 +263,12 @@ class LidarProcessor:
         return clusters
     
     def _scan_loop(self):
+        # Check if we're in mock mode
+        if self.config.get('mock_mode', False):
+            log_info("LIDAR", "Running in mock mode")
+            self._mock_scan_loop()
+            return
+
         lidar = PyRPlidar()
         attempt = 0
         max_attempts = 3
@@ -381,6 +387,51 @@ class LidarProcessor:
                     time.sleep(1)
                 except Exception as e:
                     log_error("LIDAR", f"Error during cleanup: {e}")
+
+    def _mock_scan_loop(self):
+        """Generate fake LIDAR data when in mock mode"""
+        log_info("LIDAR", "Starting mock LIDAR scan loop")
+        
+        while self._running.is_set():
+            # Generate mock scan data
+            scan_points = 180  # One point per 2 degrees
+            angles = np.linspace(0, 359, scan_points)
+            
+            # Generate varying distances - simulating a room with occasional obstacles
+            base_distances = np.ones(scan_points) * 3.0  # 3m base distance
+            
+            # Add some random walls/obstacles
+            for _ in range(3):
+                start_angle = random.randint(0, scan_points - 20)
+                length = random.randint(10, 30)
+                distance = random.uniform(0.3, 2.0)
+                end_angle = min(start_angle + length, scan_points)
+                base_distances[start_angle:end_angle] = distance
+            
+            # Add random noise
+            distances = base_distances + np.random.normal(0, 0.05, scan_points)
+            distances = np.clip(distances, 0.1, 8.0)  # Constrain to realistic values
+            
+            # Process the mock scan
+            obstacles = self._process_scan(angles.tolist(), distances.tolist())
+            
+            # Publish the mock data
+            self.publisher.send_json({
+                'type': 'obstacles',
+                'data': obstacles
+            })
+            self.publisher.send_json({
+                'type': 'scan',
+                'data': {
+                    'angles': angles.tolist(),
+                    'distances': distances.tolist(),
+                    'quality': scan_points,
+                    'mock': True
+                }
+            })
+            
+            # Simulate the scan interval
+            time.sleep(self.config.get('scan_interval', 0.1))
 
     def start(self):
         self._running.set()
