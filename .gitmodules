@@ -1,3 +1,4 @@
 [submodule "arduino"]
 	path = arduino
 	url = https://github.com/Dapringer/robotics-design
+	branch = SmoothPathFinding

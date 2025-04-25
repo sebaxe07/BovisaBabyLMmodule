@@ -3,6 +3,7 @@
 A modular robot control system with LIDAR-based obstacle detection, mock camera tracking, and motor control capabilities. The system provides a web-based visualization interface for real-time monitoring.
 
 ## Features
+
 - LIDAR-based obstacle detection and tracking
 - Camera-based human tracking (mock implementation)
 - Robot movement control via Arduino interface
@@ -11,6 +12,7 @@ A modular robot control system with LIDAR-based obstacle detection, mock camera 
 - Support for both hardware and simulation modes
 
 ## System Requirements
+
 - Python 3.8+
 - USB-connected RPLIDAR device (or run in mock mode)
 - Arduino (optional - can run in mock mode)
@@ -18,17 +20,20 @@ A modular robot control system with LIDAR-based obstacle detection, mock camera 
 ## Installation
 
 1. Clone the repository:
+
 ```
 git clone https://github.com/sebaxe07/BovisaBabyLMmodule.git
 cd BovisaBabyLMmodule
 ```
 
 2. Install the required Python packages:
+
 ```
 pip install -r requirements.txt
 ```
 
 ## Configuration
+
 The system settings are defined in [**settings.yaml**](config/settings.yaml). Key configuration sections:
 
 - **LIDAR:** Port, safety distance, update rates
@@ -37,7 +42,9 @@ The system settings are defined in [**settings.yaml**](config/settings.yaml). Ke
 - **Camera:** Position tolerance and detection distances
 
 ## Running the System
+
 To start the complete system:
+
 ```
 python run.py
 ```
@@ -52,6 +59,7 @@ This will initialize:
 - To test only the LIDAR component:
 
 ## Web Interface
+
 Once the system is running, access the visualization interface at:
 
 ```
@@ -67,23 +75,28 @@ The interface provides:
 - System status information
 
 ## Components
+
 Sensors
 
 - **LIDAR Processor** (sensors/lidar_processor.py): Processes LIDAR scan data and detects obstacles
 - **Mock Camera** (sensors/camera_client.py): Simulates a camera tracking system
 
 Control
+
 - **Main Controller** (controllers/main_controller.py): Central control system that integrates all components
 - **Arduino Interface** (motor/arduino_interface.py): Controls robot movement via Arduino (supports mock mode)
 
 Visualization
+
 - **Flask Interface** (utils/flask_visualization.py): Web-based visualization and control
 - **LIDAR Visualizer** (utils/visualization.py): Matplotlib-based LIDAR data visualization
 
 Utilities
+
 - **Colored Logger** (utils/colored_logger.py): Provides color-coded logging
 
 ## Architecture
+
 The system uses ZMQ for inter-process communication:
 
 - Port 5555: LIDAR data publishing
@@ -92,7 +105,6 @@ The system uses ZMQ for inter-process communication:
 - Port 5558: Camera tracking data
 
 Components run as separate processes for stability and performance.
-
 
 ## Operating Modes
 
@@ -107,6 +119,37 @@ Components run as separate processes for stability and performance.
 - **Visualization Not Showing:** Make sure ZMQ processes are running correctly
 - **Arduino Connection Failure:** The system will automatically fall back to mock mode
 
-## License
-This project is licensed under the MIT License - see the LICENSE file for details.
+## Arduino Submodule
 
+This project includes the [robotics-design](https://github.com/Dapringer/robotics-design) repository as a Git submodule in the `arduino` directory. This submodule handles the Arduino-specific code for localization functionality.
+
+### Submodule Setup
+
+When cloning this repository for the first time, you'll need to initialize the submodule:
+
+```
+git clone https://github.com/sebaxe07/BovisaBabyLMmodule.git
+cd BovisaBabyLMmodule
+git submodule init
+git submodule update
+```
+
+Alternatively, clone with the `--recurse-submodules` flag:
+
+```
+git clone --recurse-submodules https://github.com/sebaxe07/BovisaBabyLMmodule.git
+```
+
+### Updating the Submodule
+
+To update the submodule to the latest version:
+
+```
+git submodule update --remote arduino
+```
+
+**Note:** Access to the private robotics-design repository requires appropriate GitHub permissions.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
