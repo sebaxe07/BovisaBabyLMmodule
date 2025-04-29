@@ -53,7 +53,7 @@ camera:
 
 controller:
   communication:
-    ip: "192.168.1.50"
+    ip: "192.168.1.40"
     command_port: 5556
 
 visualization:
