@@ -25,7 +25,7 @@ def load_settings():
     try:
         with open('/home/sebas/BovisaBabyLMmodule/config/settings.yaml', 'r') as file:
             read = yaml.safe_load(file)
-            log_info("FLASK", f"File loaded: {read['lidar']['safety_distance']}")
+            log_info("FLASK", f"File loaded successfully")
             return read
     except Exception as e:
         log_error("FLASK", f"Failed to load settings: {e}")
@@ -53,9 +53,8 @@ def setup_command_publisher():
     global command_publisher
     context = zmq.Context()
     command_publisher = context.socket(zmq.PUB)
-    command_publisher.bind("tcp://*:5556")  # Different port for commands
-    log_info("FLASK", "Command publisher initialized on port 5556")
-
+    command_publisher.bind(f"tcp://*:{settings['visualization']['communication']['port']}")
+    log_info("FLASK", f"Command publisher initialized on port {settings['visualization']['communication']['port']}")
 
 def log(message):
     if VERBOSE:
@@ -156,10 +155,10 @@ def update_human_position():
 def zmq_listener():
     context = zmq.Context()
     subscriber = context.socket(zmq.SUB)
-    subscriber.connect("tcp://localhost:5555")
+    subscriber.connect(f"tcp://localhost:{settings['lidar']['communication']['port']}")
     subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
     
-    log("ZMQ subscriber connected to LIDAR data stream")
+    log(f"ZMQ subscriber connected to LIDAR data stream on port {settings['lidar']['communication']['port']}")
     
     while True:
         try:
@@ -210,10 +209,10 @@ def camera_data_listener():
     """Listen for camera tracking data"""
     context = zmq.Context()
     camera_subscriber = context.socket(zmq.SUB)
-    camera_subscriber.connect("tcp://192.168.1.50:5558")
+    camera_subscriber.connect(f"tcp://{settings['camera']['communication']['ip']}:{settings['camera']['communication']['tracking_port']}")
     camera_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
     
-    log_info("FLASK", "Camera subscriber connected to camera data stream")
+    log_info("FLASK", f"Camera subscriber connected to camera data stream on {settings['camera']['communication']['ip']}:{settings['camera']['communication']['tracking_port']}")
     
     # Add to global scan_data
     global scan_data
@@ -262,10 +261,10 @@ def video_stream_listener():
     """Listen for video stream frames from camera client"""
     context = zmq.Context()
     video_subscriber = context.socket(zmq.SUB)
-    video_subscriber.connect("tcp://192.168.1.50:5559")  # Connect to camera's video port
+    video_subscriber.connect(f"tcp://{settings['camera']['communication']['ip']}:{settings['camera']['communication']['video_port']}")
     video_subscriber.setsockopt(zmq.SUBSCRIBE, b"frame")  # Use setsockopt for bytes
     
-    log_info("FLASK", "Video subscriber connected to camera video stream")
+    log_info("FLASK", f"Video subscriber connected to camera video stream on {settings['camera']['communication']['ip']}:{settings['camera']['communication']['video_port']}")
     
     while True:
         try:

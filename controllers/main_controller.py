@@ -30,25 +30,25 @@ class MainController:
         context = zmq.Context()
         # Subscribe to LIDAR data
         self.subscriber = context.socket(zmq.SUB)
-        self.subscriber.connect("tcp://localhost:5555")
+        self.subscriber.connect(f"tcp://localhost:{self.config['lidar']['communication']['port']}")
         self.subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
         
         # Add subscription for UI commands
         self.command_subscriber = context.socket(zmq.SUB)
-        self.command_subscriber.connect("tcp://localhost:5556")
+        self.command_subscriber.connect(f"tcp://localhost:{self.config['controller']['communication']['command_port']}")
         self.command_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
-        log_info("CONTROLLER", "Connected to command channel on port 5556")
+        log_info("CONTROLLER", f"Connected to command channel on port {self.config['controller']['communication']['command_port']}")
 
         # Add subscription for camera tracking data
         self.camera_subscriber = context.socket(zmq.SUB)
-        self.camera_subscriber.connect("tcp://192.168.1.50:5558")
+        self.camera_subscriber.connect(f"tcp://{self.config['camera']['communication']['ip']}:{self.config['camera']['communication']['tracking_port']}")
         self.camera_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
-        log_info("CONTROLLER", "Connected to camera data channel on port 5558")
+        log_info("CONTROLLER", f"Connected to camera data channel on port {self.config['camera']['communication']['tracking_port']}")
         
         # Create publisher for camera commands
         self.camera_command_publisher = context.socket(zmq.PUB)
-        self.camera_command_publisher.bind("tcp://192.168.1.40:5557")
-        log_info("CONTROLLER", "Created camera command channel on port 5557")
+        self.camera_command_publisher.bind(f"tcp://{self.config['controller']['communication']['ip']}:{self.config['camera']['communication']['command_port']}")
+        log_info("CONTROLLER", f"Created camera command channel on port {self.config['camera']['communication']['command_port']}")
 
     def _setup_lidar(self):
         """Start LIDAR processor in a separate thread"""

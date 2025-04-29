@@ -24,7 +24,8 @@ class LidarProcessor:
     def _setup_communication(self):
         context = zmq.Context()
         self.publisher = context.socket(zmq.PUB)
-        self.publisher.bind("tcp://*:5555")  # Publish obstacle data
+        self.publisher.bind(f"tcp://*:{self.config['communication']['port']}")  # Publish obstacle data
+        log_info("LIDAR", f"Publisher initialized on port {self.config['communication']['port']}")
 
     def _process_scan(self, angles, distances):
         """Convert raw scan to obstacle data with tracking"""

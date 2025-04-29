@@ -5,6 +5,8 @@ lidar:
   safety_distance: 0.5 # meters
   update_rate: 10 # Hz
   scan_interval: 0.1 # seconds
+  communication:
+    port: 5555
 
 arduino:
   bus_number: 1  # I2C bus number for hardware mode
@@ -43,3 +45,17 @@ camera:
   debug_visualization: true
   target_fps: 20  # Target FPS to maintain for consistent performance
   streaming_fps: 30  # Target FPS when in streaming mode (not tracking)
+  communication:
+    ip: "192.168.1.50"
+    tracking_port: 5558
+    video_port: 5559
+    command_port: 5557
+
+controller:
+  communication:
+    ip: "192.168.1.40"
+    command_port: 5556
+
+visualization:
+  communication:
+    port: 5556

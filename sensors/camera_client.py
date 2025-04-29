@@ -58,15 +58,15 @@ class CameraClient:
         
         # Video stream publisher
         self.video_publisher = self.context.socket(zmq.PUB)
-        self.video_publisher.bind("tcp://192.168.1.50:5559")
-        log_info("CAMERA", "Video publisher initialized on port 5559")
+        self.video_publisher.bind(f"tcp://{config['communication']['ip']}:{config['communication']['video_port']}")
+        log_info("CAMERA", f"Video publisher initialized on port {config['communication']['video_port']}")
         
         self.publisher = self.context.socket(zmq.PUB)
-        self.publisher.bind("tcp://192.168.1.50:5558")
+        self.publisher.bind(f"tcp://{config['communication']['ip']}:{config['communication']['tracking_port']}")
        
         # Setup communication sockets
         self.command_subscriber = self.context.socket(zmq.SUB)
-        self.command_subscriber.connect("tcp://192.168.1.40:5557")
+        self.command_subscriber.connect(f"tcp://{self.config['communication']['ip']}:{self.config['communication']['command_port']}")
         self.command_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
         
         # Add synchronization delay
@@ -180,7 +180,7 @@ class CameraClient:
                 target_time = self.frame_time if self.running else self.streaming_frame_time
                 
                 # Wait if we're going too fast (respect the target framerate)
-                if elapsed < target_time:
+                if (elapsed < target_time):
                     sleep_time = target_time - elapsed
                     time.sleep(sleep_time)
                     # Recalculate current time after sleep

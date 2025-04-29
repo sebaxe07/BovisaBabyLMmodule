@@ -20,6 +20,7 @@ MODULE_COLORS = {
     'arduino': Colors.GREEN,
     'controller': Colors.YELLOW,
     'flask': Colors.MAGENTA,
+    'gps': Colors.MAGENTA,
     'error': Colors.RED,
     'warning': Colors.YELLOW,
     'info': Colors.WHITE,
