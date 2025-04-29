@@ -12,9 +12,9 @@ ZeroMQ (ZMQ) provides a messaging library for implementing publisher/subscriber 
 
 The system consists of three Raspberry Pi modules on the same network:
 
-- **HumanDetection**: (`192.168.10.1`) - Computer vision and tracking functionality
-- **LocalizationModule**: (`192.168.10.2`) - Localization and control functions
-- **HandDetection**: (`192.168.10.3`) - Hand gesture detection and processing
+- **HumanDetection**: (`192.168.1.50`) - Computer vision and tracking functionality
+- **LocalizationModule**: (`192.168.1.40`) - Localization and control functions
+- **HandDetection**: (`192.168.1.30`) - Hand gesture detection and processing
 
 ### Communication Pattern
 
@@ -29,9 +29,9 @@ Currently implemented communication channels:
 
 | From               | To                 | Address                 | Data            |
 | ------------------ | ------------------ | ----------------------- | --------------- |
-| HumanDetection     | LocalizationModule | tcp://192.168.10.1:5558 | Tracking data   |
-| HumanDetection     | Any subscriber     | tcp://192.168.10.1:5559 | Video stream    |
-| LocalizationModule | HumanDetection     | tcp://192.168.10.2:5557 | Camera commands |
+| HumanDetection     | LocalizationModule | tcp://192.168.1.50:5558 | Tracking data   |
+| HumanDetection     | Any subscriber     | tcp://192.168.1.50:5559 | Video stream    |
+| LocalizationModule | HumanDetection     | tcp://192.168.1.40:5557 | Camera commands |
 
 ### Implementation Guidelines
 
@@ -51,7 +51,7 @@ context = zmq.Context()
 
 # Add subscription for camera tracking data
 camera_subscriber = context.socket(zmq.SUB)
-camera_subscriber.connect("tcp://192.168.10.1:5558")
+camera_subscriber.connect("tcp://192.168.1.50:5558")
 camera_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
 
 # Receive and process messages
@@ -79,7 +79,7 @@ context = zmq.Context()
 
 # Create publisher socket
 publisher = context.socket(zmq.PUB)
-publisher.bind("tcp://192.168.10.1:5558")
+publisher.bind("tcp://192.168.1.50:5558")
 
 # Example message when tracking a person
 message = {
@@ -105,7 +105,7 @@ publisher.send_json(message)
 ```python
 # Setup command publisher
 camera_command_publisher = context.socket(zmq.PUB)
-camera_command_publisher.bind("tcp://192.168.10.2:5557")
+camera_command_publisher.bind("tcp://192.168.1.40:5557")
 
 # Start searching for humans
 camera_command_publisher.send_json({
@@ -123,7 +123,7 @@ camera_command_publisher.send_json({
 ```python
 # Setup video publisher
 video_publisher = context.socket(zmq.PUB)
-video_publisher.bind("tcp://192.168.10.1:5559")
+video_publisher.bind("tcp://192.168.1.50:5559")
 
 # Send video frame
 def send_frame(frame):
@@ -139,7 +139,7 @@ def send_frame(frame):
 
 # On subscriber side to receive frames
 video_subscriber = context.socket(zmq.SUB)
-video_subscriber.connect("tcp://192.168.10.1:5559")
+video_subscriber.connect("tcp://192.168.1.50:5559")
 video_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
 
 topic, frame_data, timestamp = video_subscriber.recv_multipart()

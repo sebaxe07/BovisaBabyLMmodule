@@ -41,13 +41,13 @@ class MainController:
 
         # Add subscription for camera tracking data
         self.camera_subscriber = context.socket(zmq.SUB)
-        self.camera_subscriber.connect("tcp://192.168.10.1:5558")
+        self.camera_subscriber.connect("tcp://192.168.1.50:5558")
         self.camera_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
         log_info("CONTROLLER", "Connected to camera data channel on port 5558")
         
         # Create publisher for camera commands
         self.camera_command_publisher = context.socket(zmq.PUB)
-        self.camera_command_publisher.bind("tcp://192.168.10.2:5557")
+        self.camera_command_publisher.bind("tcp://192.168.1.40:5557")
         log_info("CONTROLLER", "Created camera command channel on port 5557")
 
     def _setup_lidar(self):
