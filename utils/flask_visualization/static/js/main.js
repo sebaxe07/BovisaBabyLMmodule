@@ -6,6 +6,165 @@ const currentModeSpan = document.getElementById('current-mode');
 let updateTimeout = null;
 const THROTTLE_DELAY = 100; // milliseconds
 
+// Initialize map
+let map = null;
+let robotMarker = null;
+let geofenceCircle = null;
+let followRobot = true;
+let mapInitialized = false;
+let followButton = null;
+
+// Initialize the GPS map
+function initMap() {
+    // Create the map if it doesn't exist
+    if (!map) {
+        map = L.map('gps-map').setView([40.785091, -73.968285], 18);
+        
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            maxZoom: 19,
+        }).addTo(map);
+        
+        // Create robot marker with a more visible icon
+        const robotIcon = L.divIcon({
+            className: 'robot-marker',
+            html: '<div style="font-size: 24px; background-color: white; border-radius: 50%; width: 30px; height: 30px; text-align: center; line-height: 30px; border: 2px solid blue;">🤖</div>',
+            iconSize: [30, 30],
+            iconAnchor: [15, 15]
+        });
+        
+        robotMarker = L.marker([40.785091, -73.968285], { icon: robotIcon }).addTo(map);
+        
+        // Add a click handler to toggle follow mode - stop following when map is clicked
+        map.on('click', function() {
+            setFollowMode(false);
+        });
+        
+        // Add a button to toggle follow mode
+        followButton = L.control({ position: 'topright' });
+        followButton.onAdd = function() {
+            const div = L.DomUtil.create('div', 'follow-button');
+            div.innerHTML = '<button id="follow-toggle-btn" style="padding: 5px; cursor: pointer; background-color: #4CAF50; color: white; border: none; border-radius: 3px;">Following</button>';
+            
+            // Prevent the click event from propagating to the map
+            L.DomEvent.disableClickPropagation(div);
+            
+            // Add click handler to toggle follow mode
+            div.querySelector('#follow-toggle-btn').addEventListener('click', function(e) {
+                // Toggle follow mode
+                setFollowMode(!followRobot);
+            });
+            return div;
+        };
+        followButton.addTo(map);
+        
+        // Mark as initialized
+        mapInitialized = true;
+    }
+}
+
+// Set follow mode with visual feedback
+function setFollowMode(follow) {
+    followRobot = follow;
+    
+    // Update button text and style
+    const followBtn = document.querySelector('#follow-toggle-btn');
+    if (followBtn) {
+        if (follow) {
+            followBtn.textContent = 'Following';
+            followBtn.style.backgroundColor = '#4CAF50'; // Green
+            console.log("Follow mode enabled");
+        } else {
+            followBtn.textContent = 'Follow Robot';
+            followBtn.style.backgroundColor = '#2196F3'; // Blue
+            console.log("Follow mode disabled");
+        }
+    }
+    
+    // If enabling follow, update map position immediately
+    if (follow) {
+        updateGpsMap();
+    }
+}
+
+// Update the GPS map with new data
+function updateGpsMap() {
+    fetch('/gps_data')
+        .then(response => response.json())
+        .then(data => {
+            // Only proceed if we have valid latitude and longitude
+            if (data.latitude && data.longitude) {
+                const lat = data.latitude;
+                const lng = data.longitude;
+                const pos = [lat, lng];
+                
+                // Update position text
+                document.getElementById('gps-position').textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+                
+                // Update geofence status
+                const geofenceStatusEl = document.getElementById('geofence-status');
+                geofenceStatusEl.textContent = data.geofence.inside ? 'Inside' : 'OUTSIDE';
+                geofenceStatusEl.className = data.geofence.inside ? 'inside' : 'outside';
+                
+                // Display distance to edge
+                const distanceToEdgeEl = document.getElementById('distance-to-edge');
+                distanceToEdgeEl.textContent = data.geofence.distance_to_edge.toFixed(2);
+                
+                // Update satellite info
+                document.getElementById('satellites-count').textContent = data.satellites || 0;
+                document.getElementById('fix-quality').textContent = data.fix_quality || 0;
+                
+                // Initialize map if needed
+                if (!mapInitialized) {
+                    initMap();
+                }
+                
+                // Always update the marker position
+                robotMarker.setLatLng(pos);
+                
+                // Add or update the geofence circle
+                if (!geofenceCircle && data.geofence_config) {
+                    const config = data.geofence_config;
+                    geofenceCircle = L.circle(
+                        [config.center_lat, config.center_lon], 
+                        {
+                            radius: config.radius,
+                            color: 'red',
+                            fillColor: '#f03',
+                            fillOpacity: 0.1,
+                            weight: 2,
+                            dashArray: '5, 5'
+                        }
+                    ).addTo(map);
+                    
+                    // Also add a warning circle
+                    const warningRadius = config.radius - config.warning_distance;
+                    if (warningRadius > 0) {
+                        L.circle(
+                            [config.center_lat, config.center_lon],
+                            {
+                                radius: warningRadius,
+                                color: 'orange',
+                                fillColor: '#ff6500',
+                                fillOpacity: 0.05,
+                                weight: 1,
+                                dashArray: '3, 5'
+                            }
+                        ).addTo(map);
+                    }
+                }
+                
+                // Center map on robot position if following is enabled
+                if (followRobot) {
+                    console.log("Following robot at", lat, lng);
+                    map.setView(pos, map.getZoom());
+                }
+            }
+        })
+        .catch(error => console.error('Error fetching GPS data:', error));
+}
+
 // Set up human position controls
 document.getElementById('x-position').addEventListener('input', function() {
     const xPosition = this.value;
@@ -76,8 +235,6 @@ function generateSafetyCircle(safetyDistance) {
     }
     return {angles, distances};
 }
-
-
 
 let safetyCircle = generateSafetyCircle(1)
 
@@ -319,6 +476,13 @@ function updatePlot() {
         .catch(error => console.error('Error:', error));
 }
 
-// Update every 250ms
+// Initialize map when the page loads
+document.addEventListener('DOMContentLoaded', initMap);
+
+// Update every 250ms for LIDAR data
 setInterval(updatePlot, 250);
 updatePlot(); // Initial update
+
+// Update every 1s for GPS data (GPS updates less frequently)
+setInterval(updateGpsMap, 1000);
+updateGpsMap(); // Initial update

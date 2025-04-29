@@ -23,7 +23,7 @@ VERBOSE = False  # Set to True for debugging
 def load_settings():
     log_info("FLASK", "Loading settings from YAML file")
     try:
-        with open('/home/sebas/BovisaBabyLMmodule/config/settings.yaml', 'r') as file:
+        with open('/home/pi5/BovisaBabyLMmodule/config/settings.yaml', 'r') as file:
             read = yaml.safe_load(file)
             log_info("FLASK", f"File loaded successfully")
             return read
@@ -47,6 +47,30 @@ data_lock = Lock()
 
 command_publisher = None
 
+# Define GPS data storage
+gps_data = {
+    "latitude": None,
+    "longitude": None,
+    "altitude": None,
+    "speed": 0,
+    "course": 0,
+    "satellites": 0,
+    "fix_quality": 0,
+    "hdop": 99.9,
+    "timestamp": 0,
+    "geofence": {
+        "inside": True,
+        "distance_to_center": 0,
+        "distance_to_edge": 0,
+    },
+    "geofence_config": {
+        "center_lat": settings['gps']['geofence']['center_lat'],
+        "center_lon": settings['gps']['geofence']['center_lon'],
+        "radius": settings['gps']['geofence']['radius'],
+        "warning_distance": settings['gps']['geofence']['warning_distance']
+    }
+}
+gps_lock = Lock()
 
 
 def setup_command_publisher():
@@ -151,6 +175,11 @@ def update_human_position():
         'distance': distance
     })
 
+@app.route('/gps_data')
+def get_gps_data():
+    """API endpoint to get GPS data"""
+    with gps_lock:
+        return jsonify(gps_data)
 
 def zmq_listener():
     context = zmq.Context()
@@ -279,6 +308,51 @@ def video_stream_listener():
             log_error("FLASK", f"Error receiving video frame: {e}")
             time.sleep(0.1)
 
+def gps_data_listener():
+    """Listen for GPS data from GPS processor"""
+    context = zmq.Context()
+    gps_subscriber = context.socket(zmq.SUB)
+    gps_subscriber.connect(f"tcp://localhost:{settings['gps']['communication']['port']}")
+    gps_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
+    
+    log_info("FLASK", f"GPS subscriber connected to GPS data stream on port {settings['gps']['communication']['port']}")
+    
+    global gps_data
+    
+    while True:
+        try:
+            msg = gps_subscriber.recv_json()
+            
+            if msg['type'] == 'gps_data':
+                with gps_lock:
+                    gps_data.update({
+                        "latitude": msg.get('latitude'),
+                        "longitude": msg.get('longitude'),
+                        "altitude": msg.get('altitude'),
+                        "speed": msg.get('speed', 0),
+                        "course": msg.get('course', 0),
+                        "satellites": msg.get('satellites', 0),
+                        "fix_quality": msg.get('fix_quality', 0),
+                        "hdop": msg.get('hdop', 99.9),
+                        "timestamp": msg.get('timestamp', time.time())
+                    })
+                    
+                    if 'geofence' in msg:
+                        gps_data['geofence'].update(msg['geofence'])
+                    
+                    # Log every 10 seconds to avoid flooding the console
+                    if int(time.time()) % 10 == 0:
+                        status = "INSIDE" if gps_data['geofence']['inside'] else "OUTSIDE"
+                        log_info("FLASK", f"GPS update: {gps_data['latitude']:.6f}, {gps_data['longitude']:.6f} | " 
+                                f"Geofence: {status} | Distance to edge: {gps_data['geofence']['distance_to_edge']:.2f}m")
+                        
+            elif msg['type'] == 'geofence_alert':
+                log_info("FLASK", f"Geofence alert: {msg.get('alert_level', 'unknown')} - {msg.get('command', '')}")
+                
+        except Exception as e:
+            log_error("FLASK", f"Error receiving GPS data: {e}")
+            time.sleep(0.1)
+
 # Create a function to initialize everything
 def initialize():
     # Start ZMQ listener thread
@@ -296,6 +370,11 @@ def initialize():
     video_thread.daemon = True
     video_thread.start()
     log_info("FLASK", "Video stream listener started")
+    # Start GPS data listener
+    gps_thread = Thread(target=gps_data_listener)
+    gps_thread.daemon = True
+    gps_thread.start()
+    log_info("FLASK", "GPS data listener started")
 
 # Initialize when module is imported
 initialize()

@@ -53,9 +53,39 @@ camera:
 
 controller:
   communication:
-    ip: "192.168.1.40"
+    ip: "192.168.1.50"
     command_port: 5556
 
 visualization:
   communication:
     port: 5556
+
+gps:
+  mock_mode: true   # Set to false when real GPS module is connected
+  port: "/dev/ttyAMA0"  # The serial port for real GPS (typical for Raspberry Pi)
+  baud_rate: 9600  # Default baud rate for NEO-M8N
+  update_rate: 1.0  # Update frequency in seconds
+  communication:
+    port: 5560      # Port for GPS data publication
+  
+  # Geofence settings
+  geofence:
+    enabled: true
+    # Center point of geofence (default: approximately Central Park, NYC for demo)
+    center_lat: 40.785091
+    center_lon: -73.968285
+    # Radius in meters
+    radius: 100
+    # Warning distance from fence boundary in meters
+    warning_distance: 10
+    
+  # Mock GPS simulation settings
+  mock_settings:
+    # Starting position (same as geofence center by default)
+    start_lat: 40.785091
+    start_lon: -73.968285
+    # Max random movement per update (in degrees)
+    max_movement: 0.0001
+    # Simulate GPS issues occasionally
+    simulate_issues: false
+    issue_probability: 0.05

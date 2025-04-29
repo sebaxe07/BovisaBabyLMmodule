@@ -9,6 +9,7 @@ import zmq
 import time
 from motor.arduino_interface import ArduinoInterface
 from sensors.lidar_processor import LidarProcessor
+from sensors.gps_processor import GpsProcessor
 from utils.colored_logger import log_info, log_error, log_debug
 
 class MainController:
@@ -18,12 +19,19 @@ class MainController:
         self.arduino = ArduinoInterface(config['arduino'])
         self._setup_communication()
         self._setup_lidar()
+        self._setup_gps()
         # Camera is now on a different device, no need to set it up locally
         self.current_state = "IDLE"
         self.target_direction = None
         self.target_distance = None
         self.target_position = None
         self.last_obstacles = []
+        
+        # Geofence status
+        self.inside_geofence = True
+        self.returning_to_geofence = False
+        self.return_bearing = 0  # Direction to geofence center
+        
         log_info("CONTROLLER", "Initialization complete")
 
     def _setup_communication(self):
@@ -44,6 +52,12 @@ class MainController:
         self.camera_subscriber.connect(f"tcp://{self.config['camera']['communication']['ip']}:{self.config['camera']['communication']['tracking_port']}")
         self.camera_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
         log_info("CONTROLLER", f"Connected to camera data channel on port {self.config['camera']['communication']['tracking_port']}")
+        
+        # Add subscription for GPS data
+        self.gps_subscriber = context.socket(zmq.SUB)
+        self.gps_subscriber.connect(f"tcp://localhost:{self.config['gps']['communication']['port']}")
+        self.gps_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
+        log_info("CONTROLLER", f"Connected to GPS data channel on port {self.config['gps']['communication']['port']}")
         
         # Create publisher for camera commands
         self.camera_command_publisher = context.socket(zmq.PUB)
@@ -69,6 +83,25 @@ class MainController:
         time.sleep(1.0)
         log_info("CONTROLLER", "LIDAR processor started")
 
+    def _setup_gps(self):
+        """Start GPS processor in a separate thread"""
+        log_info("CONTROLLER", "Starting GPS processor")
+        
+        def run_gps():
+            processor = GpsProcessor(self.config['gps'])
+            processor.start()
+            # Store reference to allow clean shutdown later
+            self.gps_processor = processor
+        
+        # Start in a daemon thread so it exits when the main program exits
+        self.gps_thread = Thread(target=run_gps)
+        self.gps_thread.daemon = True
+        self.gps_thread.start()
+        
+        # Give the GPS processor a moment to start
+        time.sleep(1.0)
+        log_info("CONTROLLER", "GPS processor started")
+
     def _avoidance_strategy(self, obstacles):
         """Simple obstacle avoidance logic"""
         front_obstacles = [o for o in obstacles if abs(o['y']) < 0.2]
@@ -83,7 +116,63 @@ class MainController:
                 return "right"
             else:
                 return "left"
+
+    def _process_geofence_alert(self, alert):
+        """Process a geofence alert from the GPS"""
+        alert_level = alert.get('alert_level')
+        direction = alert.get('direction_to_center')
+        
+        if alert_level == 'critical':
+            log_error("CONTROLLER", "CRITICAL GEOFENCE ALERT - Outside permitted area!")
+            distance_outside = alert.get('distance_outside', 0)
+            log_error("CONTROLLER", f"Robot is {distance_outside:.2f}m outside permitted area")
+            log_error("CONTROLLER", f"Initiating return to geofence, bearing {direction:.1f}°")
             
+            # Override current state - geofence takes priority
+            self.previous_state = self.current_state  # Store current state to restore later
+            self.current_state = "RETURNING"
+            self.returning_to_geofence = True
+            self.return_bearing = direction
+            
+            # Stop camera tracking if active
+            self.camera_command_publisher.send_json({'command': 'STOP'})
+            
+            # Convert bearing to robot command
+            # Simple conversion - could be made more sophisticated
+            if 45 <= direction < 135:  # Roughly East
+                self.arduino.send_command("right")
+            elif 225 <= direction < 315:  # Roughly West
+                self.arduino.send_command("left")
+            else:  # Roughly North or South - go forward
+                self.arduino.send_command("forward")
+            
+        elif alert_level == 'warning':
+            log_info("CONTROLLER", "GEOFENCE WARNING - Approaching boundary")
+            distance_edge = alert.get('distance_to_edge', 0)
+            log_info("CONTROLLER", f"Robot is {distance_edge:.2f}m from boundary")
+            
+            # Don't override state but log warning
+            if self.current_state == "TRACKING":
+                log_info("CONTROLLER", "Continuing tracking but monitoring geofence")
+            
+            # We could slow down or take other precautionary measures here
+
+    def _bearing_to_robot_command(self, bearing, current_position=None):
+        """Convert a compass bearing to a robot command"""
+        # This is a simplified version - could be improved with actual heading data
+        
+        # Divide the compass into quadrants
+        if 315 <= bearing or bearing < 45:  # North
+            return "forward"
+        elif 45 <= bearing < 135:  # East
+            return "right"
+        elif 135 <= bearing < 225:  # South
+            return "reverse"
+        elif 225 <= bearing < 315:  # West
+            return "left"
+            
+        # Default if bearing calculation fails
+        return "forward"
 
     def process_messages(self):
         last_command_time = 0
@@ -106,11 +195,52 @@ class MainController:
         return_duration = self.config['robot']['return_duration']  # seconds to turn back
             
         while True:
+            current_time = time.time()
+            
+            # Check for GPS data (high priority)
+            try:
+                gps_msg = self.gps_subscriber.recv_json(zmq.NOBLOCK)
+                
+                if gps_msg['type'] == 'gps_data':
+                    # Update local position information
+                    if 'geofence' in gps_msg:
+                        self.inside_geofence = gps_msg['geofence']['inside']
+                        
+                    # If we were returning to geofence and now inside, restore previous state
+                    if self.returning_to_geofence and self.inside_geofence:
+                        log_info("CONTROLLER", "Successfully returned to geofence area")
+                        self.returning_to_geofence = False
+                        self.current_state = getattr(self, 'previous_state', "IDLE")
+                        log_info("CONTROLLER", f"Restoring previous state: {self.current_state}")
+                        
+                        # Stop the robot to reassess
+                        self.arduino.send_command("stop")
+                        
+                        # If we were tracking, resume camera operations
+                        if self.current_state == "TRACKING":
+                            self.camera_command_publisher.send_json({'command': 'SEARCH'})
+                            
+                elif gps_msg['type'] == 'geofence_alert':
+                    # Process geofence alerts
+                    self._process_geofence_alert(gps_msg)
+            except zmq.Again:
+                pass
+
+            # If returning to geofence, this takes precedence over other behaviors
+            if self.returning_to_geofence:
+                # Check if we need to update our heading based on new bearing data
+                if current_time - last_command_time > throttle_interval:
+                    command = self._bearing_to_robot_command(self.return_bearing)
+                    self.arduino.send_command(command)
+                    last_command_time = current_time
+                    
+                # Skip other processing while returning to geofence
+                time.sleep(0.01)
+                continue
 
             # Check for camera tracking data
             try:
                 camera_msg = self.camera_subscriber.recv_json(zmq.NOBLOCK)
-                current_time = time.time()
                 
                 # Process camera tracking data with throttling
                 if self.current_state == "AVOIDING":
@@ -158,7 +288,7 @@ class MainController:
                         
                         # Only send command if time elapsed and direction changed
                         self.arduino.send_command(self.target_position)
-                        log_info("CONTROLLER", f"Sent command: {self.target_direction }")
+                        log_info("CONTROLLER", f"Sent command: {self.target_direction}")
                 
                     elif camera_msg['type'] == 'NOTFOUND' and not not_found:
                         # We lost track of the human or not found
@@ -261,6 +391,11 @@ class MainController:
                 log_info("CONTROLLER", f"Received command: {cmd['command']}")
                 
                 if cmd['command'] == 'set_state':
+                    # Don't allow state changes if we're returning to geofence
+                    if self.returning_to_geofence:
+                        log_info("CONTROLLER", "Ignoring state change request while returning to geofence")
+                        continue
+                        
                     self.current_state = cmd['state']
                     log_info("CONTROLLER", f"State changed to: {self.current_state}")
                     # If command is search, send search command to camera
@@ -287,6 +422,11 @@ class MainController:
 
                     
                 elif cmd['command'] == 'motor':
+                    # Don't allow direct motor control if we're returning to geofence
+                    if self.returning_to_geofence:
+                        log_info("CONTROLLER", "Ignoring motor command while returning to geofence")
+                        continue
+                        
                     self.arduino.send_command(cmd['action'])
                     log_info("CONTROLLER", f"Sent motor command: {cmd['action']}")
                     
@@ -305,6 +445,13 @@ class MainController:
                 log_info("CONTROLLER", "LIDAR processor stopped")
             except Exception as e:
                 log_error("CONTROLLER", f"Error stopping LIDAR: {e}")
+                
+        if hasattr(self, 'gps_processor'):
+            try:
+                self.gps_processor.stop()
+                log_info("CONTROLLER", "GPS processor stopped")
+            except Exception as e:
+                log_error("CONTROLLER", f"Error stopping GPS: {e}")
         
         if hasattr(self, 'arduino'):
             try:

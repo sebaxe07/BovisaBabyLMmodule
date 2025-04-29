@@ -16,3 +16,5 @@ ultralytics
 smbus2
 # Configuration
 PyYAML
+
+pynmea2

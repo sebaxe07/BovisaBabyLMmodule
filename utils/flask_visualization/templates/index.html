@@ -3,6 +3,9 @@
 <head>
     <title>LIDAR and Camera Visualization</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <!-- Leaflet CSS and JavaScript for GPS map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
@@ -23,6 +26,18 @@
             <div id="video-container">
                 <h2>Camera Feed</h2>
                 <img id="video-stream" src="{{ url_for('video_feed') }}" alt="Video stream">
+            </div>
+            
+            <!-- GPS Map -->
+            <div id="gps-container">
+                <h2>GPS Location</h2>
+                <div id="gps-map"></div>
+                <div id="gps-status">
+                    <div>Position: <span id="gps-position">Waiting for data...</span></div>
+                    <div>Geofence: <span id="geofence-status">Inside</span></div>
+                    <div>Distance to edge: <span id="distance-to-edge">N/A</span> meters</div>
+                    <div>Satellites: <span id="satellites-count">0</span> | Fix Quality: <span id="fix-quality">0</span></div>
+                </div>
             </div>
         </div>
         
