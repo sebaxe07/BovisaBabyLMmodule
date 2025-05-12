@@ -27,6 +27,7 @@ class CameraClient:
         self.camera_running = False
         self.camera_lock = Lock()
         self.confidence_threshold = config['confidence_threshold']
+        self.stopping = False  # Flag to indicate stopping in progress
         
         # FPS control parameters
         self.target_fps = config['target_fps']  # Target FPS for tracking
@@ -383,6 +384,23 @@ class CameraClient:
             return
             
         log_info("CAMERA", "Stopping tracking")
+        
+        # First set the stopping flag to prevent new position messages
+        self.stopping = True
+        
+        # Send multiple STOP/NOTFOUND messages to ensure they're received
+        # This ensures any pending position messages are overridden
+        for _ in range(3):  # Send multiple times to ensure receipt
+            stop_message = {
+                "type": "STOPPED",
+                "x_position": 0,
+                "distance": 0,
+                "human_id": 0
+            }
+            self.publisher.send_json(stop_message)
+            time.sleep(0.02)  # Small delay between messages
+            
+        # Now stop the tracking thread
         self.running = False
         self.tracking_event.clear()
         
@@ -396,6 +414,18 @@ class CameraClient:
         self.distance_history = []
         self.id_tracked = 0
         self.status = "STOPPED"
+        
+        # Send one final STOPPED message after thread is terminated
+        final_stop = {
+            "type": "STOPPED",
+            "x_position": 0,
+            "distance": 0,
+            "human_id": 0
+        }
+        self.publisher.send_json(final_stop)
+        
+        # Finally clear the stopping flag
+        self.stopping = False
         
         log_info("CAMERA", "Tracking stopped")
 
@@ -677,7 +707,9 @@ class CameraClient:
                         "human_id": min_track_id
                     }
                     self.id_tracked = min_track_id
-                    self.publisher.send_json(message)
+                    # Only send the tracking message if we're not in the process of stopping
+                    if not self.stopping:
+                        self.publisher.send_json(message)
 
                 # Send the frame with tracking visualizations
                 self.send_frame(display_frame)
