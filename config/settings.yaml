@@ -61,7 +61,7 @@ visualization:
     port: 5556
 
 gps:
-  mock_mode: true   # Set to false when real GPS module is connected
+  mock_mode: false   # Set to false when real GPS module is connected
   port: "/dev/ttyAMA0"  # The serial port for real GPS (typical for Raspberry Pi)
   baud_rate: 9600  # Default baud rate for NEO-M8N
   update_rate: 1.0  # Update frequency in seconds
