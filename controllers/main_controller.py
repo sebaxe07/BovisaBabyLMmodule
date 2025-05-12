@@ -62,7 +62,7 @@ class MainController:
         # Create publisher for camera commands
         self.camera_command_publisher = context.socket(zmq.PUB)
         self.camera_command_publisher.bind(f"tcp://{self.config['controller']['communication']['ip']}:{self.config['camera']['communication']['command_port']}")
-        log_info("CONTROLLER", f"Created camera command channel on port {self.config['camera']['communication']['command_port']}")
+        log_info("CONTROLLER", f"Created camera command channel on address tcp://{self.config['controller']['communication']['ip']}:{self.config['camera']['communication']['command_port']}")
 
     def _setup_lidar(self):
         """Start LIDAR processor in a separate thread"""
