@@ -23,7 +23,7 @@ VERBOSE = False  # Set to True for debugging
 def load_settings():
     log_info("FLASK", "Loading settings from YAML file")
     try:
-        with open('/home/pi5/BovisaBabyLMmodule/config/settings.yaml', 'r') as file:
+        with open('/home/sebas/BovisaBabyLMmodule/config/settings.yaml', 'r') as file:
             read = yaml.safe_load(file)
             log_info("FLASK", f"File loaded successfully")
             return read
