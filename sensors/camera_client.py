@@ -62,11 +62,11 @@ class CameraClient:
         log_info("CAMERA", f"Video publisher initialized on port {config['communication']['video_port']}")
         
         self.publisher = self.context.socket(zmq.PUB)
-        self.publisher.bind(f"tcp://192.168.1.40:{config['communication']['tracking_port']}")
+        self.publisher.bind(f"tcp://{config['communication']['ip']}:{config['communication']['tracking_port']}")
        
         # Setup communication sockets
         self.command_subscriber = self.context.socket(zmq.SUB)
-        self.command_subscriber.connect(f"tcp://{self.config['communication']['ip']}:{self.config['communication']['command_port']}")
+        self.command_subscriber.connect(f"tcp://192.168.1.40:{self.config['communication']['command_port']}")
         self.command_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
         
         # Add synchronization delay
