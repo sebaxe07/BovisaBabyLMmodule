@@ -33,6 +33,8 @@ class GpsProcessor:
         self.fix_quality = 0  # 0 = no fix, 1 = GPS fix, 2 = DGPS fix
         self.hdop = 99.9  # Horizontal dilution of precision (lower is better)
         self.last_update = 0  # Timestamp of last update
+        self.has_fix = False  # Whether we have a valid GPS fix
+        self.status_message = "No GPS data yet"  # Human-readable status
         
         # Geofence status
         self.geofence_enabled = config['geofence']['enabled']
@@ -155,7 +157,6 @@ class GpsProcessor:
                     while self._running.is_set():
                         # Read a line from the GPS
                         line = ser.readline().decode('ascii', errors='replace').strip()
-                        
                         # Skip empty lines
                         if not line:
                             continue
@@ -165,39 +166,123 @@ class GpsProcessor:
                             msg = pynmea2.parse(line)
                             
                             # Process different types of NMEA sentences
-                            if isinstance(msg, pynmea2.GGA):
+                            if isinstance(msg, pynmea2.RMC):  # GNRMC, GPRMC
+                                # RMC contains position, speed, course, and status
+                                if msg.status == 'A':  # 'A' = valid, 'V' = void
+                                    self.has_fix = True
+                                    self.status_message = "GPS fix acquired"
+                                    if hasattr(msg, 'latitude') and msg.latitude:
+                                        self.latitude = msg.latitude
+                                        self.longitude = msg.longitude
+                                        self.last_update = time.time()
+                                        self.speed = float(msg.spd_over_grnd) * 1.852 if msg.spd_over_grnd else 0.0  # Convert knots to km/h
+                                        self.course = float(msg.true_course) if msg.true_course else 0.0
+                                        self._update_geofence_status()
+                                        self._publish_gps_data()
+                                else:
+                                    self.has_fix = False
+                                    self.status_message = "No GPS fix (GNRMC: Void navigation data)"
+                                    log_debug("GPS", "RMC message with void status")
+                                
+                            elif isinstance(msg, pynmea2.GGA):  # GNGGA, GPGGA
                                 # GGA message contains position, altitude, and fix quality
-                                if msg.latitude and msg.longitude:
+                                self.fix_quality = int(msg.gps_qual) if msg.gps_qual else 0
+                                self.satellites = int(msg.num_sats) if msg.num_sats else 0
+                                
+                                if self.fix_quality > 0 and msg.latitude and msg.longitude:
+                                    self.has_fix = True
+                                    self.status_message = f"GPS fix acquired (Quality: {self.fix_quality})"
                                     self.latitude = msg.latitude
                                     self.longitude = msg.longitude
                                     self.altitude = float(msg.altitude) if msg.altitude else None
-                                    self.fix_quality = int(msg.gps_qual)
-                                    self.satellites = int(msg.num_sats) if msg.num_sats else 0
                                     self.hdop = float(msg.horizontal_dil) if msg.horizontal_dil else 99.9
                                     self.last_update = time.time()
                                     
                                     # Calculate geofence status
                                     self._update_geofence_status()
-                                    
-                                    # Publish the GPS data
                                     self._publish_gps_data()
-                                    
-                            elif isinstance(msg, pynmea2.VTG):
-                                # VTG message contains speed and course
-                                self.speed = float(msg.spd_over_grnd_kmph) if msg.spd_over_grnd_kmph else 0.0
-                                self.course = float(msg.true_track) if msg.true_track else 0.0
+                                else:
+                                    self.has_fix = False
+                                    if self.fix_quality == 0:
+                                        self.status_message = "No GPS fix (GNGGA: Fix quality 0)"
+                                    else:
+                                        self.status_message = f"Invalid GGA data with quality {self.fix_quality}"
+                                    log_debug("GPS", f"GGA message without fix. Quality: {self.fix_quality}, Satellites: {self.satellites}")
                                 
+                            elif isinstance(msg, pynmea2.GSA):  # GNGSA, GPGSA
+                                # GSA contains DOP (dilution of precision) values and fix type
+                                # Mode: 1=no fix, 2=2D fix, 3=3D fix
+                                fix_type = int(msg.mode_fix) if hasattr(msg, 'mode_fix') and msg.mode_fix else 1
+                                
+                                if hasattr(msg, 'pdop'):
+                                    pdop = float(msg.pdop) if msg.pdop else 99.99
+                                    hdop = float(msg.hdop) if msg.hdop else 99.99
+                                    vdop = float(msg.vdop) if msg.vdop else 99.99
+                                    
+                                    # Only update HDOP if better than current
+                                    if hdop < self.hdop:
+                                        self.hdop = hdop
+                                
+                                if fix_type == 1:
+                                    log_debug("GPS", f"GSA indicates no fix (Mode: {fix_type})")
+                                    if self.status_message == "No GPS data yet":
+                                        self.status_message = "No GPS fix (GNGSA: Fix not available)"
+                                elif fix_type >= 2:
+                                    log_debug("GPS", f"GSA indicates {fix_type}D fix")
+                            
+                            elif isinstance(msg, pynmea2.GSV):  # GPGSV, GAGSV, GBGSV, GQGSV
+                                # GSV contains satellites in view information
+                                if hasattr(msg, 'num_sv_in_view') and msg.num_sv_in_view:
+                                    sats_in_view = int(msg.num_sv_in_view)
+                                    if sats_in_view > self.satellites:
+                                        self.satellites = sats_in_view
+                                    if sats_in_view == 0:
+                                        log_debug("GPS", "GSV indicates no satellites in view")
+                                        if self.status_message == "No GPS data yet":
+                                            self.status_message = "No GPS fix (GSV: No satellites in view)"
+                            
+                            elif isinstance(msg, pynmea2.VTG):  # GNVTG, GPVTG
+                                # VTG message contains speed and course
+                                if hasattr(msg, 'spd_over_grnd_kmph') and msg.spd_over_grnd_kmph:
+                                    self.speed = float(msg.spd_over_grnd_kmph)
+                                if hasattr(msg, 'true_track') and msg.true_track:
+                                    self.course = float(msg.true_track)
+                            
+                            elif isinstance(msg, pynmea2.GLL):  # GNGLL, GPGLL
+                                # GLL contains position and status
+                                status = msg.status if hasattr(msg, 'status') else 'V'
+                                
+                                if status == 'A' and msg.latitude and msg.longitude:
+                                    self.has_fix = True
+                                    self.latitude = msg.latitude
+                                    self.longitude = msg.longitude
+                                    self.last_update = time.time()
+                                    log_debug("GPS", "Valid GLL position received")
+                                else:
+                                    log_debug("GPS", "GLL with void status")
+                                    if self.status_message == "No GPS data yet":
+                                        self.status_message = "No GPS fix (GNGLL: Void status)"
+                            
                         except pynmea2.ParseError:
                             # Ignore parse errors - some sentences might be corrupt
                             pass
                             
+                        # Check if fix has timed out (no valid position for >10 seconds)
+                        if self.has_fix and time.time() - self.last_update > 10:
+                            self.has_fix = False
+                            self.status_message = "GPS fix lost (timeout)"
+                            log_debug("GPS", "GPS fix timed out")
+                            self._publish_gps_data()
+                            
             except serial.SerialException as e:
                 log_error("GPS", f"Serial error: {e}")
                 # Wait before trying to reconnect
+                self.status_message = f"GPS connection error: {e}"
                 time.sleep(5)
                 
             except Exception as e:
                 log_error("GPS", f"Error in GPS loop: {e}")
+                self.status_message = f"GPS processing error: {e}"
                 time.sleep(1)
 
     def _update_geofence_status(self):
@@ -247,7 +332,8 @@ class GpsProcessor:
                 'inside': self.inside_geofence,
                 'distance_to_center': self.distance_to_center,
                 'distance_to_edge': self.distance_to_edge,
-            }
+            },
+            'status_message': self.status_message
         }
         
         # Send GPS data
@@ -328,6 +414,60 @@ class GpsProcessor:
             'distance_to_center': self.distance_to_center,
             'distance_to_edge': self.distance_to_edge,
         }
+
+    def get_status_info(self):
+        """
+        Get detailed status information about the GPS connection.
+        
+        Returns:
+            dict: A dictionary containing status information about the GPS connection
+        """
+        time_since_update = time.time() - self.last_update if self.last_update > 0 else float('inf')
+        
+        return {
+            'has_fix': self.has_fix,
+            'fix_quality': self.fix_quality,
+            'satellites': self.satellites,
+            'hdop': self.hdop,
+            'status_message': self.status_message,
+            'time_since_update': time_since_update,
+            'geofence_status': self.get_geofence_status(),
+            'connection_status': 'Connected' if time_since_update < 10 else 'Disconnected',
+            'position': {
+                'latitude': self.latitude,
+                'longitude': self.longitude,
+                'altitude': self.altitude,
+                'speed': self.speed,
+                'course': self.course
+            }
+        }
+        
+    def interpret_gps_status(self):
+        """
+        Provide a human-readable interpretation of the current GPS status.
+        
+        Returns:
+            str: A detailed explanation of the GPS status
+        """
+        if not self.has_fix:
+            causes = []
+            if self.satellites == 0:
+                causes.append("No satellites in view")
+            if self.hdop >= 20:
+                causes.append(f"Poor precision (HDOP: {self.hdop})")
+            if self.status_message and "Void" in self.status_message:
+                causes.append("Void navigation data")
+            if self.fix_quality == 0:
+                causes.append("No position fix")
+                
+            if causes:
+                cause_text = ", ".join(causes)
+                return f"No valid GPS position. Reason: {cause_text}. This may occur indoors or with obstructed sky view."
+            else:
+                return "No valid GPS position. Try moving to an open area with clear sky view."
+        else:
+            quality_desc = "Excellent" if self.hdop < 1.0 else "Good" if self.hdop < 2.0 else "Fair" if self.hdop < 5.0 else "Poor"
+            return f"GPS fix acquired with {self.satellites} satellites. Signal quality: {quality_desc} (HDOP: {self.hdop:.1f})"
 
     def cleanup(self):
         """Clean up resources"""

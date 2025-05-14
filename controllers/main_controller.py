@@ -174,6 +174,37 @@ class MainController:
         # Default if bearing calculation fails
         return "forward"
 
+    def _process_gps_data(self, message):
+        """Process GPS data message"""
+        # Store GPS data in controller
+        self.current_gps = message
+        
+        # Update dashboard with GPS status
+        if hasattr(self, 'gps_processor'):
+            status_info = self.gps_processor.get_status_info()
+            interpretation = self.gps_processor.interpret_gps_status()
+            
+            # Log detailed interpretations when status changes or periodically
+            if (not hasattr(self, '_last_gps_status') or 
+                self._last_gps_status != status_info['status_message'] or
+                time.time() - getattr(self, '_last_gps_log_time', 0) > 30):
+                
+                log_info("Controller", f"GPS Status: {interpretation}")
+                self._last_gps_status = status_info['status_message']
+                self._last_gps_log_time = time.time()
+                
+                # If no fix, show more detailed diagnostics
+                if not status_info['has_fix']:
+                    log_debug("Controller", f"GPS Diagnostics: {status_info['satellites']} satellites, "
+                             f"HDOP: {status_info['hdop']:.1f}, Fix quality: {status_info['fix_quality']}")
+        
+        # Handle geofence alerts if enabled
+        if 'geofence' in message and self.config['geofence']['enabled']:
+            if not message['geofence']['inside']:
+                log_error("Controller", f"GEOFENCE ALERT: Outside geofence by "
+                         f"{-message['geofence']['distance_to_edge']:.1f}m")
+                # Take action based on geofence alert
+
     def process_messages(self):
         last_command_time = 0
         last_direction = None
