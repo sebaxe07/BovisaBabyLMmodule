@@ -6,7 +6,9 @@ import zmq
 import serial
 import threading
 import pynmea2
+import json
 from threading import Thread, Event
+from shapely.geometry import Point, Polygon
 from utils.colored_logger import log_info, log_error, log_debug
 
 class GpsProcessor:
@@ -38,13 +40,16 @@ class GpsProcessor:
         
         # Geofence status
         self.geofence_enabled = config['geofence']['enabled']
-        self.geofence_center = (config['geofence']['center_lat'], 
-                                config['geofence']['center_lon'])
-        self.geofence_radius = config['geofence']['radius']
         self.warning_distance = config['geofence']['warning_distance']
         self.inside_geofence = True
-        self.distance_to_center = 0.0
         self.distance_to_edge = 0.0
+        
+        # Load geofence from JSON file
+        if self.geofence_enabled:
+            self._load_geofence(config['geofence']['geofence_file'])
+            
+        # Flag to track first publish
+        self.first_publish = False
         
         # Set up communication
         self._setup_communication()
@@ -287,31 +292,39 @@ class GpsProcessor:
 
     def _update_geofence_status(self):
         """Update geofence status based on current position"""
-        if not self.geofence_enabled or not self.latitude or not self.longitude:
+        if not self.geofence_enabled or not self.latitude or not self.longitude or not hasattr(self, 'geofence_polygon') or self.geofence_polygon is None:
             return
             
-        # Calculate distance to geofence center
+        # Create a Point object for current position (Shapely uses lon/lat order)
+        current_point = Point(self.longitude, self.latitude)
+        
+        # Check if inside geofence
+        was_inside = self.inside_geofence
+        self.inside_geofence = self.geofence_polygon.contains(current_point)
+        
+        # Calculate distance to geofence edge
+        if self.inside_geofence:
+            # If inside, calculate distance to nearest edge
+            self.distance_to_edge = self._distance_to_polygon_edge(current_point, self.geofence_polygon)
+        else:
+            # If outside, distance is negative to indicate outside status
+            self.distance_to_edge = -self._distance_to_polygon_edge(current_point, self.geofence_polygon)
+        
+        # Calculate distance to geofence center (for bearing calculation)
         self.distance_to_center = self._haversine_distance(
             self.latitude, self.longitude,
             self.geofence_center[0], self.geofence_center[1]
         )
-        
-        # Calculate distance to geofence edge
-        self.distance_to_edge = max(0, self.geofence_radius - self.distance_to_center)
-        
-        # Check if inside geofence
-        was_inside = self.inside_geofence
-        self.inside_geofence = self.distance_to_center <= self.geofence_radius
         
         # Log geofence status changes
         if was_inside != self.inside_geofence:
             if self.inside_geofence:
                 log_info("GPS", "Entered geofence area")
             else:
-                log_error("GPS", f"LEFT GEOFENCE AREA! Distance to edge: {self.distance_to_edge:.2f}m")
+                log_error("GPS", f"LEFT GEOFENCE AREA! Distance to edge: {abs(self.distance_to_edge):.2f}m")
         elif not self.inside_geofence:
-            log_error("GPS", f"Outside geofence by {-self.distance_to_edge:.2f}m")
-        elif self.distance_to_edge < self.warning_distance:
+            log_error("GPS", f"Outside geofence by {abs(self.distance_to_edge):.2f}m")
+        elif abs(self.distance_to_edge) < self.warning_distance:
             log_info("GPS", f"Near geofence boundary! {self.distance_to_edge:.2f}m to edge")
 
     def _publish_gps_data(self):
@@ -335,6 +348,11 @@ class GpsProcessor:
             },
             'status_message': self.status_message
         }
+        
+        # Include polygon data if available (first time only to save bandwidth)
+        if hasattr(self, 'geofence_data') and self.geofence_data and hasattr(self, 'first_publish') and not self.first_publish:
+            gps_data['geofence']['geofence_data'] = self.geofence_data
+            self.first_publish = True
         
         # Send GPS data
         self.publisher.send_json(gps_data)
@@ -408,12 +426,19 @@ class GpsProcessor:
 
     def get_geofence_status(self):
         """Get current geofence status"""
-        return {
+        status = {
             'enabled': self.geofence_enabled,
             'inside': self.inside_geofence,
             'distance_to_center': self.distance_to_center,
             'distance_to_edge': self.distance_to_edge,
         }
+        
+        # Include polygon data if available 
+        if hasattr(self, 'geofence_data') and self.geofence_data:
+            status['polygon_type'] = self.geofence_data.get('type', 'Polygon')
+            status['polygon_name'] = self.geofence_data.get('name', 'Default Geofence')
+            
+        return status
 
     def get_status_info(self):
         """
@@ -476,3 +501,74 @@ class GpsProcessor:
             self.publisher.close()
         if hasattr(self, 'context'):
             self.context.term()
+
+    def _load_geofence(self, geofence_file):
+        """Load geofence polygon from JSON file"""
+        try:
+            with open(geofence_file, 'r') as f:
+                geofence_data = json.load(f)
+                
+            # Store the geofence data
+            self.geofence_data = geofence_data
+            
+            # Create a Shapely polygon from coordinates
+            # Note: Shapely uses (lon, lat) order, but our JSON uses (lat, lon)
+            # so we need to swap the coordinates
+            polygon_points = [(lon, lat) for lat, lon in geofence_data['coordinates']]
+            self.geofence_polygon = Polygon(polygon_points)
+            
+            # Store the center for distance calculations
+            if 'center' in geofence_data:
+                self.geofence_center = (geofence_data['center'][0], geofence_data['center'][1])
+            else:
+                # Calculate centroid if center not specified
+                centroid = self.geofence_polygon.centroid
+                self.geofence_center = (centroid.y, centroid.x)
+                
+            log_info("GPS", f"Loaded geofence with {len(geofence_data['coordinates'])} points from {geofence_file}")
+            
+        except Exception as e:
+            log_error("GPS", f"Failed to load geofence from {geofence_file}: {e}")
+            self.geofence_enabled = False
+            self.geofence_polygon = None
+            self.geofence_data = None
+
+    def _distance_to_polygon_edge(self, point, polygon):
+        """
+        Calculate the minimum distance from a point to the edge of a polygon.
+        
+        Args:
+            point: A shapely Point object
+            polygon: A shapely Polygon object
+            
+        Returns:
+            float: Distance in meters
+        """
+        # If the point is inside the polygon, return the distance to boundary
+        if polygon.contains(point):
+            return self._meters_to_degrees(polygon.boundary.distance(point))
+        
+        # If the point is outside, return distance to boundary with negative sign
+        return self._meters_to_degrees(polygon.exterior.distance(point))
+        
+    def _meters_to_degrees(self, distance_degrees):
+        """Convert a distance in decimal degrees to meters.
+        
+        This is an approximation that works well enough for small distances.
+        1 degree of latitude is approximately 111,111 meters.
+        1 degree of longitude varies with latitude.
+        """
+        # Average latitude for approximation
+        avg_lat = self.latitude
+        
+        # One degree of latitude in meters (approximately)
+        one_lat_degree_meters = 111111
+        
+        # One degree of longitude in meters (approximately, varies with latitude)
+        one_lon_degree_meters = 111111 * math.cos(math.radians(avg_lat))
+        
+        # Use an average conversion factor
+        avg_degree_meters = (one_lat_degree_meters + one_lon_degree_meters) / 2
+        
+        # Convert from degrees to meters
+        return distance_degrees * avg_degree_meters

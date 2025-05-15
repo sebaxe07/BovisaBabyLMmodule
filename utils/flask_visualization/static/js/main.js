@@ -123,36 +123,38 @@ function updateGpsMap() {
                 // Always update the marker position
                 robotMarker.setLatLng(pos);
                 
-                // Add or update the geofence circle
-                if (!geofenceCircle && data.geofence_config) {
-                    const config = data.geofence_config;
-                    geofenceCircle = L.circle(
-                        [config.center_lat, config.center_lon], 
+                // Add or update the geofence
+                if (!geofenceCircle && data.geofence_polygon) {
+                    // Create polygon from coordinates
+                    const polygon = data.geofence_polygon;
+                    const coordinates = polygon.coordinates;
+                    
+                    // Use properties from the polygon if available, otherwise defaults
+                    const polygonColor = polygon.properties?.color || '#ff0000';
+                    const fillColor = polygon.properties?.fillColor || '#ff6666';
+                    const fillOpacity = polygon.properties?.fillOpacity || 0.2;
+                    
+                    // Create the leaflet polygon
+                    geofenceCircle = L.polygon(
+                        coordinates, 
                         {
-                            radius: config.radius,
-                            color: 'red',
-                            fillColor: '#f03',
-                            fillOpacity: 0.1,
+                            color: polygonColor,
+                            fillColor: fillColor,
+                            fillOpacity: fillOpacity,
                             weight: 2,
                             dashArray: '5, 5'
                         }
                     ).addTo(map);
                     
-                    // Also add a warning circle
-                    const warningRadius = config.radius - config.warning_distance;
-                    if (warningRadius > 0) {
-                        L.circle(
-                            [config.center_lat, config.center_lon],
-                            {
-                                radius: warningRadius,
-                                color: 'orange',
-                                fillColor: '#ff6500',
-                                fillOpacity: 0.05,
-                                weight: 1,
-                                dashArray: '3, 5'
-                            }
-                        ).addTo(map);
+                    // Add popup with polygon info if available
+                    if (polygon.name || polygon.description) {
+                        let popupContent = polygon.name ? `<strong>${polygon.name}</strong><br>` : '';
+                        popupContent += polygon.description || '';
+                        geofenceCircle.bindPopup(popupContent);
                     }
+                    
+                    // Fit bounds to show the entire geofence
+                    map.fitBounds(geofenceCircle.getBounds());
                 }
                 
                 // Center map on robot position if following is enabled

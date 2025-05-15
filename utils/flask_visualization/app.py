@@ -1,4 +1,5 @@
 import math
+import os
 from flask import Flask, Response, render_template, render_template_string, jsonify, request
 import zmq
 from threading import Thread, Lock
@@ -62,13 +63,11 @@ gps_data = {
         "inside": True,
         "distance_to_center": 0,
         "distance_to_edge": 0,
+        "polygon_type": "Polygon",
+        "polygon_name": "Default Geofence"
     },
-    "geofence_config": {
-        "center_lat": settings['gps']['geofence']['center_lat'],
-        "center_lon": settings['gps']['geofence']['center_lon'],
-        "radius": settings['gps']['geofence']['radius'],
-        "warning_distance": settings['gps']['geofence']['warning_distance']
-    }
+    "geofence_polygon": None,
+    "warning_distance": settings['gps']['geofence']['warning_distance']
 }
 gps_lock = Lock()
 
@@ -179,7 +178,11 @@ def update_human_position():
 def get_gps_data():
     """API endpoint to get GPS data"""
     with gps_lock:
-        return jsonify(gps_data)
+        response_data = dict(gps_data)
+        # Include geofence polygon data in response
+        if gps_data["geofence_polygon"] is not None:
+            response_data["geofence_polygon"] = gps_data["geofence_polygon"]
+        return jsonify(response_data)
 
 def zmq_listener():
     context = zmq.Context()
@@ -339,6 +342,11 @@ def gps_data_listener():
                     
                     if 'geofence' in msg:
                         gps_data['geofence'].update(msg['geofence'])
+                        
+                        # Check if we received polygon data from GPS processor
+                        if 'geofence_data' in msg['geofence'] and msg['geofence']['geofence_data'] is not None:
+                            gps_data['geofence_polygon'] = msg['geofence']['geofence_data']
+                            log_info("FLASK", f"Received geofence polygon data from GPS processor")
                     
                     # Log every 10 seconds to avoid flooding the console
                     if int(time.time()) % 10 == 0:
@@ -352,6 +360,18 @@ def gps_data_listener():
         except Exception as e:
             log_error("FLASK", f"Error receiving GPS data: {e}")
             time.sleep(0.1)
+
+def load_geofence_data():
+    """Load geofence data from JSON file defined in settings"""
+    try:
+        geofence_file = settings['gps']['geofence']['geofence_file']
+        with open(geofence_file, 'r') as f:
+            geofence_data = json.load(f)
+        log_info("FLASK", f"Loaded geofence data from {geofence_file}")
+        return geofence_data
+    except Exception as e:
+        log_error("FLASK", f"Error loading geofence data: {e}")
+        return None
 
 # Create a function to initialize everything
 def initialize():
@@ -375,6 +395,9 @@ def initialize():
     gps_thread.daemon = True
     gps_thread.start()
     log_info("FLASK", "GPS data listener started")
+
+# Load geofence data
+gps_data["geofence_polygon"] = load_geofence_data()
 
 # Initialize when module is imported
 initialize()
