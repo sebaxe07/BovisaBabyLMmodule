@@ -319,7 +319,7 @@ class MainController:
                         
                         # Only send command if time elapsed and direction changed
                         self.arduino.send_command(self.target_position)
-                        log_info("CONTROLLER", f"Sent command: {self.target_direction}")
+                        log_info("CONTROLLER", f"Sent command: {self.target_position}")
                 
                     elif camera_msg['type'] == 'NOTFOUND' and not not_found:
                         # We lost track of the human or not found
@@ -345,7 +345,9 @@ class MainController:
                     
                     # Only process obstacles in TRACKING mode (not during avoidance)
                     if self.current_state == "TRACKING" and not avoidance_state:
-                        if self.last_obstacles and self.target_direction == "forward":
+                        log_debug("CONTROLLER", "Processing LIDAR obstacles")
+                        if self.last_obstacles and self.target_position is not None:
+                            log_debug("CONTROLLER", f"Current target position: {self.target_position}")
                             # Filter out obstacles that match the human position
                             non_human_obstacles = []
 
@@ -373,13 +375,13 @@ class MainController:
                             # Check if any non-human obstacles in front
                             front_obstacles = [o for o in non_human_obstacles if abs(o['y']) < 0.2]
                             if front_obstacles:
-                                log_info("CONTROLLER", "Non-human obstacle detected, starting avoidance")
+                                log_error("CONTROLLER", "Non-human obstacle detected, starting avoidance")
                                 self.current_state = "AVOIDING"
                                 avoidance_direction = self._avoidance_strategy(front_obstacles)
                                 avoidance_state = "AVOIDING_TURN"
                                 avoidance_start_time = current_time
                                 self.arduino.send_command(avoidance_direction)
-                                log_info("CONTROLLER", f"Avoidance step 1: Turning {avoidance_direction}")
+                                log_error("CONTROLLER", f"Avoidance step 1: Turning {avoidance_direction}")
             except zmq.Again:
                 pass
 
@@ -440,6 +442,13 @@ class MainController:
                         self.camera_command_publisher.send_json({
                             'command': 'STOP'
                         })
+                        avoidance_state = None         
+                        # Clear the target direction and distance so that camera can re-evaluate  
+                        self.target_position = None
+                        self.target_distance = None
+                        self.target_direction = None
+                        last_direction = None
+                        last_command_time = 0   
                         log_info("CONTROLLER", "Sent stop command to camera")
 
                 elif cmd['command'] == 'UPDATE_HUMAN_POSITION':

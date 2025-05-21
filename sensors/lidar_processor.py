@@ -115,7 +115,7 @@ class LidarProcessor:
             # Adaptive parameters based on point density
             eps = max(0.15, min(0.5, avg_nn_dist * 2.0))
             min_samples = max(2, min(5, int(len(points) * 0.05)))  # 5% of points, between 2-5
-            log_info("LIDAR", f"Adaptive DBSCAN: eps={eps:.2f}, min_samples={min_samples}")
+            # log_info("LIDAR", f"Adaptive DBSCAN: eps={eps:.2f}, min_samples={min_samples}")
         else:
             eps = 0.3
             min_samples = 2

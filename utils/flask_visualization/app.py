@@ -91,14 +91,12 @@ def generate_frames():
         with frame_lock:
             if frame_data.get("latest_frame") is not None:
                 img_data = frame_data["latest_frame"]
-                
                 # Create MJPEG frame format
                 yield (b'--frame\r\n'
                       b'Content-Type: image/jpeg\r\n\r\n' + img_data + b'\r\n')
                 
         # Control the frame rate
         time.sleep(0.05)  # ~20 FPS
-
 
 
 @app.route('/')
