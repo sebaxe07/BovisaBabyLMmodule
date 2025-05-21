@@ -154,7 +154,7 @@ class CameraClient:
             return
             
         # Configure camera
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 224)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
         log_info("CAMERA", "Camera successfully opened")
         
         # Store camera reference
@@ -340,6 +340,7 @@ class CameraClient:
             _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             
             # Send the frame with metadata
+            print(f"Sending frame timestamp {int(time.time() * 1000)}")
             self.video_publisher.send_multipart([
                 b"frame",
                 buffer.tobytes(),
@@ -429,7 +430,7 @@ class CameraClient:
         
         log_info("CAMERA", "Tracking stopped")
 
-    def cal_x_of_obj(self, position, frame_width=224):
+    def cal_x_of_obj(self, position, frame_width=480):
         # Calculate the center of the rectangle
         x_center = (position[0] + position[2]) / 2
         
@@ -487,7 +488,7 @@ class CameraClient:
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                 
                 # Run YOLO Detection
-                results = self.model(frame, imgsz=224, conf=self.confidence_threshold, verbose=False)
+                results = self.model(frame, imgsz=480, conf=self.confidence_threshold, verbose=False)
                 
                 # Reset tracking variables for this frame
                 min_distance = 10000
