@@ -37,9 +37,9 @@ robot:
 camera:
   port: "/dev/video0"
   tolerance: 1 # meters
-  close_distance: 0.1 # meters
-  focal_length: 577.05
-  known_height: 1.60
+  close_distance: 2 # meters
+  focal_length: 378.81
+  known_height: 1.51
   colors:
     - [255, 0, 0]    # Red
     - [0, 255, 0]    # Green

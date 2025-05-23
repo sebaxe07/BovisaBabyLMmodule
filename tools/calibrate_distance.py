@@ -72,7 +72,7 @@ def calibrate_distance():
             break
         
         # Run detection
-        results = model(frame, imgsz=224, classes=[0], conf=args.confidence)
+        results = model(frame, imgsz=480, classes=[0], conf=args.confidence)
         
         # Display the frame with detections
         if len(results[0].boxes) > 0:
