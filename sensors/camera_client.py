@@ -329,7 +329,7 @@ class CameraClient:
                 time.sleep(0.5)
             
             # Sleep to control streaming rate
-            time.sleep(0.05)  # ~20fps when just streaming
+            time.sleep(0.1)  # ~20fps when just streaming
                 
         log_info("CAMERA", "Video streaming loop ended")
 
@@ -337,8 +337,8 @@ class CameraClient:
         """Encode and send a frame over ZMQ for remote visualization"""
         try:
             # Encode the frame as JPEG
-            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            
+            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+
             # Send the frame with metadata
             print(f"Sending frame timestamp {int(time.time() * 1000)}")
             self.video_publisher.send_multipart([
