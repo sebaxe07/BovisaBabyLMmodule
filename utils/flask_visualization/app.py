@@ -42,7 +42,10 @@ scan_data = {
     "obstacles": [{"x": 1.0, "y": 0.0}],  # Default obstacle
     "cycle_count": 0,
     "max_distance": 5.0,
-    "safety_distance": settings['lidar']['safety_distance']
+    "safety_distance": settings['lidar']['safety_distance'],
+    "front_detection_angle": settings['lidar']['front_detection_angle'],
+    "emergency_stop_distance": settings['lidar'].get('emergency_stop_distance', 0.3),
+    "emergency_stop_angle": settings['lidar'].get('emergency_stop_angle', 15)
 }
 data_lock = Lock()
 

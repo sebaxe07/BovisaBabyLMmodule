@@ -5,13 +5,20 @@ lidar:
   safety_distance: 1 # meters
   update_rate: 10 # Hz
   scan_interval: 0.1 # seconds
+  # Avoidance parameters
+  front_detection_angle: 90 # degrees (±45° from center)
+  angular_urgency_weight: 0.7 # How much weight to give to angular position (0-1)
+  distance_urgency_weight: 0.3 # How much weight to give to distance (0-1)
+  # Emergency stop parameters
+  emergency_stop_distance: 0.3 # meters - if obstacle closer than this and centered, stop
+  emergency_stop_angle: 15 # degrees - center angle for emergency stop detection
   communication:
     port: 5555
 
 arduino:
   bus_number: 1  # I2C bus number for hardware mode
   I2C_ADDRESS: 0x08  # I2C address for hardware mode
-  mock_mode: false
+  mock_mode: true
   mock_settings:
     battery_initial: 12.0  # volts
     battery_drain_rate: 0.0001  # volts/update
@@ -25,11 +32,12 @@ robot:
   turn_duration: 1.0 # seconds
   forward_duration: 2  # seconds to move forward
   return_duration: 1  # seconds to turn back
+  avoidance_timeout: 5.0  # seconds before forcing a return to tracking
     
 camera:
   port: "/dev/video0"
   tolerance: 1 # meters
-  close_distance: 1.5 # meters
+  close_distance: 0.1 # meters
   focal_length: 577.05
   known_height: 1.60
   colors:

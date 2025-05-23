@@ -240,14 +240,14 @@ function generateSafetyCircle(safetyDistance) {
 
 let safetyCircle = generateSafetyCircle(1)
 
-// Create initial empty plot
+// Create initial empty plot with 2m maximum range
 Plotly.newPlot(plotDiv, [
     {
         type: 'scatterpolar',
         r: [],
         theta: [],
         mode: 'markers',
-        name: 'Scan Points',
+        name: 'Scan Points (≤ 2m)',
         marker: { size: 3, color: 'rgba(70, 130, 180, 0.5)' }
     },
     {
@@ -255,7 +255,7 @@ Plotly.newPlot(plotDiv, [
         r: [],
         theta: [],
         mode: 'markers',
-        name: 'Obstacles',
+        name: 'Obstacles (≤ 2m)',
         marker: { size: 12, color: 'red', symbol: 'x' }
     },
     {
@@ -269,7 +269,11 @@ Plotly.newPlot(plotDiv, [
     }
 ], {
     polar: {
-        radialaxis: { range: [0, 5] },
+        radialaxis: { 
+            range: [0, 2],  // Set maximum range to 2m
+            title: 'Distance (m)',
+            tickvals: [0.5, 1.0, 1.5, 2.0]
+        },
         angularaxis: { direction: "clockwise", rotation: 90 }
     },
     showlegend: true
@@ -290,16 +294,22 @@ function updatePlot() {
 
             safetyCircle = generateSafetyCircle(data.safety_distance || 1.0);
 
-            // Process obstacles
-            const obstacleAngles = data.obstacles.map(obs => 
+            // Filter obstacles to show only those under 2m
+            const filteredObstacles = data.obstacles.filter(obs => {
+                const distance = Math.sqrt(obs.x*obs.x + obs.y*obs.y);
+                return distance <= 2.0; // Only include obstacles <= 2m away
+            });
+            
+            // Process filtered obstacles
+            const obstacleAngles = filteredObstacles.map(obs => 
                 (Math.atan2(obs.y, obs.x) * 180/Math.PI + 360) % 360
             );
-            const obstacleDistances = data.obstacles.map(obs => 
+            const obstacleDistances = filteredObstacles.map(obs => 
                 Math.sqrt(obs.x*obs.x + obs.y*obs.y)
             );
             
             // Create obstacle hover text with tracking info
-            const hoverTexts = data.obstacles.map(obs => {
+            const hoverTexts = filteredObstacles.map(obs => {
                 const speed = obs.speed !== undefined ? obs.speed.toFixed(2) : 'N/A';
                 return `ID: ${obs.id || 'N/A'}<br>` + 
                        `Distance: ${obs.distance.toFixed(2)}m<br>` +
@@ -307,9 +317,9 @@ function updatePlot() {
                        `Position: (${obs.x.toFixed(2)}, ${obs.y.toFixed(2)})`;
             });
             
-            // Create velocity vectors for obstacles
+            // Create velocity vectors for filtered obstacles
             const arrowTraces = [];
-            data.obstacles.forEach(obs => {
+            filteredObstacles.forEach(obs => {
                 if (obs.vx !== undefined && obs.vy !== undefined && (obs.vx !== 0 || obs.vy !== 0)) {
                     // Calculate velocity vector
                     const r0 = Math.sqrt(obs.x*obs.x + obs.y*obs.y);
@@ -335,8 +345,8 @@ function updatePlot() {
                 }
             });
 
-            // Determine obstacle marker colors based on speed
-            const markerColors = data.obstacles.map(obs => {
+            // Determine obstacle marker colors based on speed (for filtered obstacles)
+            const markerColors = filteredObstacles.map(obs => {
                 if (!obs.speed) return 'red';
                 const maxSpeed = 1.0;
                 const speedRatio = Math.min(obs.speed / maxSpeed, 1);
@@ -345,15 +355,26 @@ function updatePlot() {
                 return `rgb(${r}, ${g}, 0)`;
             });
 
+            // Filter scan points to show only those under 2m
+            const filteredDistances = [];
+            const filteredAngles = [];
+            
+            for (let i = 0; i < data.distances.length; i++) {
+                if (data.distances[i] <= 2.0) { // Only include points <= 2m
+                    filteredDistances.push(data.distances[i]);
+                    filteredAngles.push(data.angles[i]);
+                }
+            }
+            
             // Create plot data
             const plotData = [
-                // Raw scan points
+                // Raw scan points (filtered to <= 2m)
                 {
                     type: 'scatterpolar',
-                    r: data.distances,
-                    theta: data.angles,
+                    r: filteredDistances,
+                    theta: filteredAngles,
                     mode: 'markers',
-                    name: 'Scan Points',
+                    name: 'Scan Points (≤ 2m)',
                     marker: { size: 3, color: 'rgba(70, 130, 180, 0.5)' }
                 },
                 // Obstacles with tracking data
@@ -392,9 +413,56 @@ function updatePlot() {
 
             // Add velocity vector arrows
             plotData.push(...arrowTraces);
+            
+            // Add vision cone pointing north (0°)
+            const coneDistance = 2.0; // Maximum distance (matches plot range)
+            // Use the front detection angle from LIDAR config, default to 60 degrees if not available
+            const frontConeAngle = data.front_detection_angle || 90;
+            const halfConeAngle = frontConeAngle / 2;
+            const leftEdge = (360 - halfConeAngle) % 360;  // Calculate left edge of cone
+            const rightEdge = halfConeAngle;  // Right edge of cone
+            
+            // Add emergency stop zone (red zone in front)
+            const emergencyDistance = data.emergency_stop_distance || 0.3;
+            const emergencyAngle = data.emergency_stop_angle || 15;
+            const emergencyLeftEdge = (360 - emergencyAngle) % 360;
+            const emergencyRightEdge = emergencyAngle;
+            
+            // Add emergency stop zone first (so it's below the detection cone)
+            plotData.push({
+                type: 'scatterpolar',
+                r: [0, emergencyDistance, emergencyDistance, 0],
+                theta: [emergencyLeftEdge, emergencyLeftEdge, emergencyRightEdge, emergencyRightEdge],
+                mode: 'lines',
+                fill: 'toself',
+                fillcolor: 'rgba(255, 0, 0, 0.3)',
+                line: {
+                    color: 'rgba(255, 0, 0, 0.7)',
+                    width: 1
+                },
+                name: 'Emergency Stop Zone',
+                hoverinfo: 'text',
+                hovertext: `Emergency Stop Zone<br>Distance: ${emergencyDistance}m<br>Angle: ±${emergencyAngle}°`
+            });
+            
+            // Add detection cone on top
+            plotData.push({
+                type: 'scatterpolar',
+                r: [0, coneDistance, coneDistance, 0],  // From origin to max distance and back
+                theta: [leftEdge, leftEdge, rightEdge, rightEdge],   // Dynamic cone angle centered at 0°
+                mode: 'lines',
+                fill: 'toself',
+                fillcolor: 'rgba(255, 255, 0, 0.2)',
+                line: {
+                    color: 'rgba(255, 255, 0, 0.5)',
+                    width: 1
+                },
+                showlegend: false,
+                hoverinfo: 'none'
+            });
 
-            // Add human marker if available
-            if (data.human) {
+            // Add human marker if available and within 2m range
+            if (data.human && data.human.distance <= 2.0) {
                 const humanAngle = data.human.angle;
                 const humanDistance = data.human.distance;
                 
@@ -466,10 +534,14 @@ function updatePlot() {
                 });
             }
 
-            // Update the plot
+            // Update the plot with 2m maximum range
             Plotly.react(plotDiv, plotData, {
                 polar: {
-                    radialaxis: { range: [0, 5] },
+                    radialaxis: { 
+                        range: [0, 2],  // Set maximum range to 2m
+                        title: 'Distance (m)', 
+                        tickvals: [0.5, 1.0, 1.5, 2.0] 
+                    },
                     angularaxis: { direction: "clockwise", rotation: 90 }
                 },
                 showlegend: true

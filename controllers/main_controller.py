@@ -1,6 +1,17 @@
 # controllers/main_controller.py
+# This module contains the main controller for the robot system.
+# It handles tracking of humans, obstacle avoidance, and GPS geofencing.
+# 
+# LIDAR Avoidance System:
+# The LIDAR avoidance system uses analog values (-10 to 10) similar to camera tracking
+# to provide smooth, continuous avoidance movements. Instead of a discrete state machine
+# with set turn durations, the system dynamically adjusts steering based on obstacle
+# positions and distances. This allows the robot to make smaller adjustments when
+# obstacles are not directly in front.
+#
 import sys
 import os
+import math
 from threading import Thread
 # Add project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,6 +36,7 @@ class MainController:
         self.target_direction = None
         self.target_distance = None
         self.target_position = None
+        self.original_tracking_position = None  # For storing tracking position during avoidance
         self.last_obstacles = []
         
         # Geofence status
@@ -103,19 +115,99 @@ class MainController:
         log_info("CONTROLLER", "GPS processor started")
 
     def _avoidance_strategy(self, obstacles):
-        """Simple obstacle avoidance logic"""
-        front_obstacles = [o for o in obstacles if abs(o['y']) < 0.2]
-        # We already know that we have obstacles in front
-        # Check whats the best direction to go
-        if front_obstacles:
-            # Check if there are obstacles on the left and right
-            left_obstacles = [o for o in front_obstacles if o['y'] > -0.2 and o['y'] < 0]
-            right_obstacles = [o for o in front_obstacles if o['y'] < 0.2 and o['y'] >= 0]
-            
-            if len(left_obstacles) > len(right_obstacles):
-                return "right"
-            else:
-                return "left"
+        """
+        Advanced obstacle avoidance using analog position values (-10 to 10)
+        to provide smooth, intelligent turning behavior.
+        
+        The algorithm works as follows:
+        1. Direction determination: 
+           - If obstacle is on the left side, turn right (negative value)
+           - If obstacle is on the right side, turn left (positive value)
+        
+        2. Urgency calculation:
+           - Center obstacles generate higher urgency (sharper turns)
+           - Edge obstacles generate lower urgency (gentler turns)
+           - Closer obstacles increase urgency
+        
+        3. Emergency stop:
+           - Very close obstacles directly in front trigger emergency stop
+        
+        The final value is direction × urgency × max_turn_value (10)
+        """
+        # Get the front detection cone angle from config, default to 60 degrees if not specified
+        front_cone_angle = self.config['lidar']['front_detection_angle']
+        
+        # Filter for obstacles in the front cone based on angle
+        front_obstacles = []
+        for o in obstacles:
+            if o['x'] > 0:  # Only consider obstacles in front (positive x)
+                # Calculate angle in degrees from forward direction
+                obstacle_angle = math.degrees(math.atan2(o['y'], o['x']))
+                # Check if within our cone angle (e.g., ±30 degrees)
+                if abs(obstacle_angle) <= (front_cone_angle / 2):
+                    front_obstacles.append(o)
+        
+        if not front_obstacles:
+            # No obstacles in front
+            return 0.0  # Go straight
+        
+        # Find the closest obstacle in the cone
+        closest_obstacle = min(front_obstacles, key=lambda o: o['distance'])
+        
+        # Calculate the angle of the obstacle from the center
+        obstacle_angle = math.degrees(math.atan2(closest_obstacle['y'], closest_obstacle['x']))
+        
+        # Check if we're in an emergency stop situation (obstacle very close and near center)
+        emergency_stop_distance = self.config['lidar']['emergency_stop_distance']
+        emergency_stop_angle = self.config['lidar']['emergency_stop_angle']
+
+        if closest_obstacle['distance'] < emergency_stop_distance and abs(obstacle_angle) < emergency_stop_angle:
+            log_error("CONTROLLER", f"EMERGENCY STOP! Obstacle too close ({closest_obstacle['distance']:.2f}m) and centered (angle: {obstacle_angle:.1f}°)")
+            return None  # Special return value to indicate emergency stop
+        
+        # CORRECTED AVOIDANCE LOGIC:
+        # 1. Base direction: determine which way to turn based on obstacle position
+        # If obstacle is on the right (negative angle), turn left (positive value)
+        # If obstacle is on the left (positive angle), turn right (negative value)
+        turn_direction = -1.0 if obstacle_angle > 0 else 1.0
+        
+        # 2. DIRECT ANGLE MAPPING: Convert obstacle angle directly to a turn magnitude
+        # Map from angle range [-max_angle, max_angle] to turn magnitude [10, 3]
+        # Center angle (0°) = maximum turn value (10)
+        # Edge angles (±max_angle) = minimum turn value (min_turn_value)
+        max_detection_angle = front_cone_angle / 2
+        min_turn_value = 3.0  # Minimum turn value at the edges of detection cone
+        
+        # Linear mapping from angle to turn magnitude
+        # As |angle| approaches 0 (center), turn_magnitude approaches 10
+        # As |angle| approaches max_angle, turn_magnitude approaches min_turn_value
+        angle_ratio = abs(obstacle_angle) / max_detection_angle  # 0 at center, 1 at edges
+        turn_magnitude = 10.0 - (angle_ratio * (10.0 - min_turn_value))
+        
+        # 3. Distance urgency: Higher when obstacle is closer
+        # This will boost the turn magnitude for closer obstacles
+        distance_factor = 1.0 - (closest_obstacle['distance'] / self.config['lidar']['safety_distance'])
+        distance_factor = max(0.5, min(1.0, distance_factor))  # Keep in range [0.5, 1.0]
+        
+        # 4. Apply distance factor to increase turn magnitude for closer obstacles
+        # This ensures we still get full 10 for center obstacles, but boosted turn for close ones
+        final_turn_magnitude = turn_magnitude * (1.0 + (distance_factor - 0.5) * 0.5)
+        final_turn_magnitude = min(10.0, final_turn_magnitude)  # Cap at 10
+        
+        # 5. Calculate final avoidance value with sign from turn_direction
+        avoidance_value = turn_direction * final_turn_magnitude
+        
+        # Constrain to -10 to 10 range
+        avoidance_value = max(-10.0, min(10.0, avoidance_value))
+        
+        log_debug("CONTROLLER", f"Avoidance value: {avoidance_value:.2f}, " 
+                 f"obstacle at ({closest_obstacle['x']:.2f}, {closest_obstacle['y']:.2f}), "
+                 f"angle: {obstacle_angle:.1f}°, distance: {closest_obstacle['distance']:.2f}m, "
+                 f"turn_direction: {turn_direction}, angle_ratio: {angle_ratio:.2f}, "
+                 f"turn_magnitude: {turn_magnitude:.2f}, distance_factor: {distance_factor:.2f}, "
+                 f"final_magnitude: {final_turn_magnitude:.2f}, cone: ±{front_cone_angle/2:.1f}°")
+        
+        return avoidance_value
 
     def _process_geofence_alert(self, alert):
         """Process a geofence alert from the GPS"""
@@ -217,13 +309,11 @@ class MainController:
         human_position = None
         human_distance = None
 
-        # Avoidance routine variables
-        avoidance_state = None
+        # Dynamic avoidance variables
         avoidance_start_time = 0
-        avoidance_direction = None
-        turn_duration = self.config['robot']['turn_duration']  # seconds to turn
-        forward_duration = self.config['robot']['forward_duration']  # seconds to move forward
-        return_duration = self.config['robot']['return_duration']  # seconds to turn back
+        avoidance_direction = 0.0
+        # Get avoidance timeout from config or use default
+        avoidance_timeout = self.config['robot']['avoidance_timeout']
             
         while True:
             current_time = time.time()
@@ -275,7 +365,23 @@ class MainController:
                 
                 # Process camera tracking data with throttling
                 if self.current_state == "AVOIDING":
-                    # We are in avoidance mode, let the LIDAR handle it
+                    # Store the tracking data but don't act on it immediately
+                    # Let the avoidance system handle movement until avoidance is complete
+                    if camera_msg['type'] == 'TRACKING':
+                        # Store human position for obstacle comparison and future tracking
+                        self.target_position = camera_msg['x_position']
+                        self.target_distance = camera_msg['distance']
+                        human_position = self.target_position
+                        human_distance = self.target_distance
+                        
+                        # Convert camera coordinates to LIDAR-style coordinates
+                        human_x_lidar = human_distance  # forward = x in LIDAR
+                        human_y_lidar = human_position  # right-positive to left-positive conversion
+                        
+                        # Store this as the original tracking position for when avoidance completes
+                        self.original_tracking_position = self.target_position
+                        
+                        log_debug("CONTROLLER", f"Human tracked during avoidance at position: {self.target_position:.2f}")
                     continue
                 else:
                     # Process camera tracking data
@@ -343,11 +449,9 @@ class MainController:
                 if msg['type'] == 'obstacles':
                     self.last_obstacles = msg['data']
                     
-                    # Only process obstacles in TRACKING mode (not during avoidance)
-                    if self.current_state == "TRACKING" and not avoidance_state:
-                        log_debug("CONTROLLER", "Processing LIDAR obstacles")
-                        if self.last_obstacles and self.target_position is not None:
-                            log_debug("CONTROLLER", f"Current target position: {self.target_position}")
+                    # Process obstacles in both TRACKING and AVOIDING modes
+                    if (self.current_state == "TRACKING" or self.current_state == "AVOIDING") and not self.returning_to_geofence:
+                        if self.last_obstacles:
                             # Filter out obstacles that match the human position
                             non_human_obstacles = []
 
@@ -360,63 +464,120 @@ class MainController:
                                     # Calculate distance between obstacle and expected human position
                                     position_diff = abs(obstacle['x'] - human_x_lidar) + abs(obstacle['y'] - human_y_lidar)
                                     distance_diff = abs(obstacle_distance - human_distance)
-                                    log_debug("CONTROLLER", f"Obstacle at ({obstacle['x']:.2f}, {obstacle['y']:.2f}) "
-                                            f"with distance {obstacle_distance:.2f}m, human at ({human_x_lidar:.2f}, {human_y_lidar:.2f}) "
-                                            f"with distance {human_distance:.2f}m - position_diff: {position_diff:.2f}, distance_diff: {distance_diff:.2f}")
-                                    # If obstacle is close to where we expect the human to be
-                                    if position_diff < 0.5 and distance_diff < 0.5:  # 0.5m threshold
+                                    
+                                    # # Debug logs only when not in avoidance mode to reduce log spam
+                                    # if self.current_state != "AVOIDING":
+                                    #     log_debug("CONTROLLER", f"Obstacle at ({obstacle['x']:.2f}, {obstacle['y']:.2f}) "
+                                    #             f"with distance {obstacle_distance:.2f}m vs human at ({human_x_lidar:.2f}, {human_y_lidar:.2f}) - "
+                                    #             f"diff: {position_diff:.2f}, {distance_diff:.2f}")
+                                    
+                                    # If obstacle is close to where we expect the human to be (slightly increased threshold)
+                                    human_threshold = 0.6  # Slightly increased from 0.5 for more reliable detection
+                                    if position_diff < human_threshold and distance_diff < human_threshold:
                                         log_debug("CONTROLLER", f"Obstacle at ({obstacle['x']:.2f}, {obstacle['y']:.2f}) " 
                                                 f"identified as human - ignoring for avoidance")
                                         continue
                                 
                                 # If we get here, it's not the human
                                 non_human_obstacles.append(obstacle)
-                        
-                            # Check if any non-human obstacles in front
-                            front_obstacles = [o for o in non_human_obstacles if abs(o['y']) < 0.2]
+                            
+                            # Get an analog avoidance value (-10 to 10)
+                            # Get the front detection cone angle from config, default to 60 degrees
+                            front_cone_angle = self.config['lidar']['front_detection_angle']
+                            # Filter obstacles in front based on angle
+                            front_obstacles = []
+                            for o in non_human_obstacles:
+                                if o['x'] > 0:  # Only consider obstacles in front (positive x)
+                                    # Calculate angle in degrees from forward direction
+                                    obstacle_angle = math.degrees(math.atan2(o['y'], o['x']))
+                                    # Check if within our cone angle
+                                    if abs(obstacle_angle) <= (front_cone_angle / 2):
+                                        front_obstacles.append(o)
+                                        if self.current_state != "AVOIDING":  # Reduce log spam during active avoidance
+                                            log_debug("CONTROLLER", f"Obstacle in front cone: angle={obstacle_angle:.1f}°, "
+                                                     f"position=({o['x']:.2f}, {o['y']:.2f}), distance={o['distance']:.2f}m")
+                            
                             if front_obstacles:
-                                log_error("CONTROLLER", "Non-human obstacle detected, starting avoidance")
-                                self.current_state = "AVOIDING"
-                                avoidance_direction = self._avoidance_strategy(front_obstacles)
-                                avoidance_state = "AVOIDING_TURN"
-                                avoidance_start_time = current_time
-                                self.arduino.send_command(avoidance_direction)
-                                log_error("CONTROLLER", f"Avoidance step 1: Turning {avoidance_direction}")
+                                # We have obstacles in front - calculate avoidance value
+                                avoidance_value = self._avoidance_strategy(non_human_obstacles)
+                                
+                                # Check if this is an emergency stop situation (avoidance_value is None)
+                                if avoidance_value is None:
+                                    # Emergency stop - obstacle too close and centered
+                                    log_error("CONTROLLER", "EMERGENCY STOP initiated - obstacle too close and centered")
+                                    self.arduino.send_command("stop")
+                                    
+                                    # Stop the camera tracking as well
+                                    self.camera_command_publisher.send_json({
+                                        'command': 'STOP'
+                                    })
+                                    
+                                    # Set state to IDLE to pause all movement
+                                    self.current_state = "IDLE"
+                                    log_error("CONTROLLER", "Setting state to IDLE due to emergency stop")
+                                    
+                                    # Reset tracking variables
+                                    self.target_position = None
+                                    self.target_distance = None
+                                    self.target_direction = None
+                                    last_direction = None
+                                    last_command_time = 0
+                                    
+                                    # Clear the avoidance time tracking
+                                    avoidance_start_time = 0
+                                    
+                                else:
+                                    # Normal avoidance behavior
+                                    if self.current_state == "TRACKING":
+                                        log_error("CONTROLLER", "Obstacle detected, entering dynamic avoidance mode")
+                                        self.current_state = "AVOIDING"
+                                        # Store the original tracking position to restore later
+                                        self.original_tracking_position = self.target_position
+                                    
+                                    # Send analog command directly to arduino
+                                    self.arduino.send_command(float(avoidance_value))
+                                    
+                                    # Only log every few avoidance commands to reduce spam
+                                    if current_time - last_command_time > 0.5:  # Log at most every 0.5 seconds
+                                        log_error("CONTROLLER", f"Avoidance steering: {avoidance_value:.2f}")
+                                        last_command_time = current_time
+                                    
+                                    # Set timestamp for avoidance timeout
+                                    avoidance_start_time = current_time
+                            
+                            elif self.current_state == "AVOIDING":
+                                # No more obstacles - return to tracking or go back to original heading
+                                log_info("CONTROLLER", "Obstacle cleared, returning to tracking")
+                                self.current_state = "TRACKING"
+                                
+                                # # If we have a stored tracking position, return to it
+                                # if hasattr(self, 'original_tracking_position') and self.original_tracking_position is not None:
+                                #     self.arduino.send_command(float(self.original_tracking_position))
+                                #     log_info("CONTROLLER", f"Returning to original heading: {self.original_tracking_position}")
+                                # else:
+                                #     # No stored position, just go forward
+                                #     self.arduino.send_command(0.0)  # Center/forward
             except zmq.Again:
                 pass
 
-            # Process avoidance state machine
-            if self.current_state == "AVOIDING" and avoidance_state:
-                elapsed = current_time - avoidance_start_time
-                
-                if avoidance_state == "AVOIDING_TURN" and elapsed >= turn_duration:
-                    # Step 2: Move forward
-                    avoidance_state = "AVOIDING_FORWARD"
-                    avoidance_start_time = current_time
-                    self.arduino.send_command("forward")
-                    log_info("CONTROLLER", "Avoidance step 2: Moving forward")
-                    
-                elif avoidance_state == "AVOIDING_FORWARD" and elapsed >= forward_duration:
-                    # Step 3: Turn back to original direction
-                    avoidance_state = "AVOIDING_RETURN"
-                    avoidance_start_time = current_time
-                    # Reverse the direction for return turn
-                    return_direction = "left" if avoidance_direction == "right" else "right"
-                    self.arduino.send_command(return_direction)
-                    log_info("CONTROLLER", f"Avoidance step 3: Turning back {return_direction}")
-                    
-                elif avoidance_state == "AVOIDING_RETURN" and elapsed >= return_duration:
-                    # Step 4: Return to tracking
-                    log_info("CONTROLLER", "Avoidance complete, returning to tracking")
-                    self.current_state = "TRACKING"
-                    avoidance_state = None         
-                    # Clear the target direction and distance so that camera can re-evaluate  
-                    self.target_position = None
-                    self.target_distance = None
-                    self.target_direction = None
-                    last_direction = None
-                    last_command_time = 0   
+            # The old step-by-step avoidance state machine has been replaced
+            # with a continuous, dynamic avoidance system that uses the analog position values
 
+
+            # Dynamic avoidance timeout - if we've been avoiding too long, force a return to tracking
+            if self.current_state == "AVOIDING":
+                avoidance_timeout = self.config['robot']['avoidance_timeout']  # Default 5 seconds
+                
+                if current_time - avoidance_start_time > avoidance_timeout:
+                    log_info("CONTROLLER", f"Avoidance timeout after {avoidance_timeout:.1f}s, returning to tracking")
+                    self.current_state = "TRACKING"
+                    
+                    # If we have a stored tracking position, return to it
+                    if hasattr(self, 'original_tracking_position') and self.original_tracking_position is not None:
+                        self.arduino.send_command(float(self.original_tracking_position))
+                    else:
+                        # No stored position, just go forward
+                        self.arduino.send_command(0.0)  # Center/forward
 
             # Check for UI commands
             try:
@@ -442,13 +603,15 @@ class MainController:
                         self.camera_command_publisher.send_json({
                             'command': 'STOP'
                         })
-                        avoidance_state = None         
-                        # Clear the target direction and distance so that camera can re-evaluate  
+                        # Reset all tracking and avoidance variables
                         self.target_position = None
                         self.target_distance = None
                         self.target_direction = None
                         last_direction = None
-                        last_command_time = 0   
+                        last_command_time = 0
+                        # Also clear any stored original tracking position from avoidance
+                        if hasattr(self, 'original_tracking_position'):
+                            self.original_tracking_position = None  
                         log_info("CONTROLLER", "Sent stop command to camera")
 
                 elif cmd['command'] == 'UPDATE_HUMAN_POSITION':
