@@ -1,6 +1,7 @@
 import zmq
 import time
 import random
+import traceback
 from threading import Thread, Event, Lock
 from utils.colored_logger import log_debug, log_info, log_error
 import yaml
@@ -12,6 +13,7 @@ import numpy as np
 from boxmot import ByteTrack  # Faster alternative to DeepSORT
 import torch
 import queue
+from pupil_apriltags import Detector as AprilTagDetector
 
 # filepath: /home/sebas/BovisaBabyLMmodule/sensors/camera_client.py
 
@@ -52,7 +54,14 @@ class CameraClient:
         self.distance_history = []
         self.max_history = 5  # Keep last 5 measurements
         self.id_tracked = 0
-
+        
+        # AprilTag detection parameters
+        self.charging = False  # Flag to indicate charging mode
+        self.charging_event = Event()
+        self.tag_detector = AprilTagDetector(families='tag25h9', nthreads=4)
+        self.tag_size = 0.15  # Tag size in meters - adjust based on actual size
+        self.tag_id = None  # To track which tag we're following
+        
         # Initialize YOLO model
         torch.set_num_threads(4)  # Use all 4 Pi 5 cores
         self.model = YOLO(config['model'], task='pose')
@@ -883,20 +892,119 @@ class CameraClient:
                 cmd = self.command_subscriber.recv_json(zmq.NOBLOCK)
                 log_info("CAMERA", f"Received command: {cmd['command']}")
 
-                if cmd['command'] == "SEARCH":
-                    if not self.running:
-                        # Start tracking mode (detection processing)
-                        self.start_tracking()
-                        
-                elif cmd['command'] == "STOP":
-                    if self.running:
-                        # Stop tracking mode (but keep camera running)
-                        self.stop_tracking()
+                # If charging, only respond to STOP command
+                if self.charging:
+                    if cmd['command'] == "STOP":
+                        log_info("CAMERA", "Stopping charging mode")
+                        # Stop charging detection
+                        self.stop_charging()
+                    else:
+                        # Ignore all other commands while charging
+                        log_info("CAMERA", f"Ignoring '{cmd['command']}' command during charging mode")
+                        continue
+                else:
+                    # Normal command processing when not in charging mode
+                    if cmd['command'] == "SEARCH":
+                        if not self.running:
+                            # Start tracking mode (detection processing)
+                            self.start_tracking()
+                            
+                    elif cmd['command'] == "STOP":
+                        if self.running:
+                            # Stop tracking mode (but keep camera running)
+                            self.stop_tracking()
+                            
+                    elif cmd['command'] == "CHARGE":
+                        # Stop tracking if it's running
+                        if self.running:
+                            self.stop_tracking()
+                            
+                        # Start charging mode (April tag detection)
+                        self.start_charging()
 
             except zmq.Again:
                 pass
 
             time.sleep(0.01)
+
+    def start_charging(self):
+        """Start April tag detection for charging"""
+        if self.charging:
+            log_info("CAMERA", "Charging detection is already running")
+            return
+            
+        log_info("CAMERA", "Starting April tag detection for charging")
+        
+        try:
+            # Stop tracking if it's running
+            if self.running:
+                self.stop_tracking()
+                
+            # Start charging detection
+            self.charging = True
+            self.status = "CHARGING"
+            self.tag_id = None  # Reset tag ID
+            self.charging_event.set()
+            self.charging_thread = Thread(target=self._charging_loop)
+            self.charging_thread.daemon = True
+            self.charging_thread.start()
+            
+            log_info("CAMERA", "Charging detection thread started")
+            
+        except Exception as e:
+            log_error("CAMERA", f"Failed to start charging detection: {e}")
+            log_error("CAMERA", traceback.format_exc())
+            self.charging = False
+            self.status = "STOPPED"
+    
+    def stop_charging(self):
+        """Stop April tag detection"""
+        if not self.charging:
+            return
+            
+        log_info("CAMERA", "Stopping charging detection")
+        
+        # First set the stopping flag to prevent new position messages
+        self.stopping = True
+        
+        # Send multiple STOP messages to ensure they're received
+        for _ in range(3):
+            stop_message = {
+                "type": "STOPPED",
+                "x_position": 0,
+                "distance": 0,
+                "tag_id": 0
+            }
+            self.publisher.send_json(stop_message)
+            time.sleep(0.02)
+            
+        # Now stop the charging thread
+        self.charging = False
+        self.charging_event.clear()
+        
+        # Wait for the thread to terminate
+        if self.charging_thread:
+            log_info("CAMERA", "Waiting for charging detection thread to terminate...")
+            self.charging_thread.join(timeout=3.0)
+            self.charging_thread = None
+            
+        # Reset tracking data
+        self.tag_id = None
+        self.status = "STOPPED"
+        
+        # Send one final STOPPED message after thread is terminated
+        final_stop = {
+            "type": "STOPPED",
+            "x_position": 0,
+            "distance": 0,
+            "tag_id": 0
+        }
+        self.publisher.send_json(final_stop)
+        
+        # Finally clear the stopping flag
+        self.stopping = False
+        
+        log_info("CAMERA", "Charging detection stopped")
 
     def cleanup(self):
         """Clean up resources before exit"""
@@ -905,6 +1013,10 @@ class CameraClient:
         # Stop tracking if running
         if self.running:
             self.stop_tracking()
+            
+        # Stop charging detection if running
+        if self.charging:
+            self.stop_charging()
         
         # Stop video streaming
         if self.streaming:
@@ -925,3 +1037,164 @@ class CameraClient:
             self.command_subscriber.close()
             
         self.context.term()
+
+    def _charging_loop(self):
+        """Process frames to detect AprilTags for charging"""
+        log_info("CAMERA", "Starting AprilTag detection loop for charging")
+        
+        # Initialize distance smoothing for tags
+        tag_distance_history = []
+        max_history = 5
+        
+        while self.charging_event.is_set():
+            try:
+                # Get the latest frame
+                try:
+                    frame_data = self.frame_queue.get(timeout=1.0)
+                    frame = frame_data["frame"]  # Get original frame without overlays
+                    fps = frame_data["fps"]
+                except queue.Empty:
+                    # No frame available
+                    time.sleep(0.1)
+                    continue
+                
+                # Create a copy for processing and visualization
+                display_frame = frame.copy()
+                
+                # Get frame dimensions
+                frame_height, frame_width = frame.shape[:2]
+                
+                # Add FPS and temperature info
+                cpu_temp = self.get_cpu_temperature()
+                cv2.putText(display_frame, f"FPS: {int(fps)}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.putText(display_frame, f"CPU: {cpu_temp:.1f}°C", (10, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                
+                # Add status indicator 
+                cv2.putText(display_frame, "CHARGING MODE", (10, 110),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                
+                # Convert image to grayscale for AprilTag detection
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                
+                # Detect AprilTags
+                tags = self.tag_detector.detect(gray)
+                
+                if tags:
+                    # Found at least one tag
+                    if self.status != "CHARGING_TRACKING":
+                        log_info("CAMERA", f"Found {len(tags)} AprilTags")
+                        self.status = "CHARGING_TRACKING"
+                    
+                    # Process each detected tag
+                    best_tag = None
+                    min_distance = float('inf')
+                    
+                    for tag in tags:
+                        tag_id = tag.tag_id
+                        
+                        # If we're already tracking a specific tag, prioritize it
+                        if self.tag_id is not None and tag_id != self.tag_id:
+                            continue
+                            
+                        # Get the center of the tag
+                        center = tag.center
+                        
+                        # Calculate the x position (-10 to 10)
+                        x_position = self.cal_x_of_obj([center[0]-50, center[1]-50, center[0]+50, center[1]+50], frame_width)
+                        
+                        # Estimate distance using the tag size
+                        # The corners are returned in clockwise order starting from the top left
+                        corners = tag.corners
+                        
+                        # Calculate the width of the tag in pixels (average of top and bottom sides)
+                        width1 = np.linalg.norm(corners[1] - corners[0])  # Top edge
+                        width2 = np.linalg.norm(corners[2] - corners[3])  # Bottom edge
+                        tag_width_px = (width1 + width2) / 2
+                        
+                        # Calculate distance based on known tag size
+                        # Distance = (known_size * focal_length) / perceived_size
+                        distance = (self.tag_size * self.focal_length) / tag_width_px
+                        
+                        # If this is a better candidate than what we have, save it
+                        if best_tag is None or distance < min_distance:
+                            best_tag = tag
+                            min_distance = distance
+                    
+                    # Process the best tag
+                    if best_tag is not None:
+                        tag_id = best_tag.tag_id
+                        center = best_tag.center
+                        corners = best_tag.corners
+                        
+                        # Draw the tag outline and center point
+                        cv2.polylines(display_frame, [corners.astype(np.int32).reshape((-1, 1, 2))], True, (0, 255, 0), 2)
+                        cv2.circle(display_frame, (int(center[0]), int(center[1])), 5, (0, 0, 255), -1)
+                        
+                        # Calculate x position
+                        x_position = self.cal_x_of_obj([center[0]-50, center[1]-50, center[0]+50, center[1]+50], frame_width)
+                        
+                        # Save the tag we're tracking
+                        if self.tag_id is None:
+                            self.tag_id = tag_id
+                        
+                        # Add distance to history for smoothing
+                        tag_distance_history.append(min_distance)
+                        while len(tag_distance_history) > max_history:
+                            tag_distance_history.pop(0)
+                        
+                        # Use median for stability
+                        if len(tag_distance_history) > 1:
+                            smoothed_distance = sorted(tag_distance_history)[len(tag_distance_history)//2]
+                        else:
+                            smoothed_distance = min_distance
+                            
+                        # Add annotation to the frame
+                        cv2.putText(display_frame, f"Tag {tag_id}: {smoothed_distance:.2f}m", 
+                                (int(center[0]), int(center[1] - 20)), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                                
+                        # Send position message
+                        message = {
+                            "type": "CHARGING_TRACKING",
+                            "x_position": x_position,
+                            "distance": smoothed_distance,
+                            "tag_id": tag_id
+                        }
+                        
+                        # Only send the tracking message if we're not in the process of stopping
+                        if not self.stopping:
+                            self.publisher.send_json(message)
+                    
+                else:
+                    # No tags found
+                    if self.status != "CHARGING_NOTFOUND":
+                        log_info("CAMERA", "No AprilTags found")
+                        self.status = "CHARGING_NOTFOUND"
+                        
+                    # Reset tag tracking
+                    self.tag_id = None
+                    tag_distance_history = []
+                    
+                    # Send not found message
+                    message = {
+                        "type": "CHARGING_NOTFOUND",
+                        "x_position": 0,
+                        "distance": 0,
+                        "tag_id": 0
+                    }
+                    self.publisher.send_json(message)
+                
+                # Send the frame with visualizations
+                self.send_frame(display_frame)
+                
+            except Exception as e:
+                log_error("CAMERA", f"Charging detection error: {e}")
+                log_error("CAMERA", traceback.format_exc())
+                time.sleep(0.5)
+            
+            # Process at a higher rate for responsive tag detection
+            time.sleep(0.02)
+                
+        log_info("CAMERA", "Charging detection loop ended")

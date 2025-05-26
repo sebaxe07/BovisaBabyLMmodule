@@ -227,6 +227,15 @@ document.getElementById('startSearch').addEventListener('click', () => {
         });
 });
 
+document.getElementById('startCharging').addEventListener('click', () => {
+    fetch('/control/charge')
+        .then(response => response.json())
+        .then(data => {
+            currentModeSpan.textContent = `Mode: ${data.mode}`;
+            statusDiv.innerHTML += `<br>Command sent: Start charging (April tag detection)`;
+        });
+});
+
 // Create safety circle points
 function generateSafetyCircle(safetyDistance) {
     const angles = [];

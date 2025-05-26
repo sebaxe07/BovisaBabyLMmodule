@@ -155,6 +155,16 @@ def start_search():
     return jsonify({'success': True, 'mode': 'SEARCH'})
 
 
+@app.route('/control/charge')
+def start_charging():
+    if command_publisher:
+        command_publisher.send_json({
+            'command': 'CHARGE'
+        })
+        log_info("FLASK", "Sent command: Start charging (April tag detection)")
+    return jsonify({'success': True, 'mode': 'CHARGING'})
+
+
 @app.route('/control/update_human_position')
 def update_human_position():
     """Update the mock human's position via ZMQ command"""

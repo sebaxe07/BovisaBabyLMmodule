@@ -48,6 +48,7 @@ body {
 .start-button { background: #4CAF50; color: white; }
 .stop-button { background: #f44336; color: white; }
 .sim-button { background: #2196F3; color: white; }
+.charge-button { background: #FF9800; color: white; }
 .control-button:hover { opacity: 0.8; }
 .control-button:disabled { opacity: 0.5; cursor: not-allowed; }
 

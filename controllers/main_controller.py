@@ -407,6 +407,27 @@ class MainController:
                         human_x_lidar = human_distance  # forward = x in LIDAR
                         human_y_lidar = human_position  # right-positive to left-positive conversion
                         #log_debug("CONTROLLER", f"Human at LIDAR coords: ({human_x_lidar:.2f}, {human_y_lidar:.2f})")
+                    
+                    # Process charging station (April tag) tracking data
+                    elif camera_msg['type'] == 'CHARGING_TRACKING':
+                        not_found = False
+                        self.current_state = "CHARGING"
+                        self.target_position = camera_msg['x_position']
+                        self.target_distance = camera_msg['distance']
+                        
+                        log_info("CONTROLLER", f"Charging station found at position: {self.target_position:.2f}, distance: {self.target_distance:.2f}m")
+                        
+                        # Send position command to arduino using analog position value (-10 to 10)
+                        self.arduino.send_command(self.target_position)
+                        
+                        # Check if we are close to the charging station
+                        charging_close_distance = self.config.get('camera', {}).get('charging_close_distance', 0.5)  # Default to 0.5m if not specified
+                        if self.target_distance <= charging_close_distance:
+                            # We are close to the charging station
+                            log_info("CONTROLLER", "Close to charging station. Docking...")
+                            self.arduino.send_command("dock")  # Assuming "dock" is a special command for docking
+                            
+                            # We don't stop charging mode yet, it will continue until stopped manually
 
 
                         # Check if we are close to the target
@@ -445,6 +466,13 @@ class MainController:
                         
                         log_info("CONTROLLER", "Lost track, stopping movement")
                         self.arduino.send_command("stop")
+                    
+                    elif camera_msg['type'] == 'CHARGING_NOTFOUND' and self.current_state == "CHARGING":
+                        # Lost track of charging station but stay in charging mode
+                        log_info("CONTROLLER", "Lost track of charging station, searching...")
+                        # We stay in CHARGING state but stop moving to avoid collisions
+                        self.arduino.send_command("stop")
+                        # Could implement a search pattern here if needed
 
             except zmq.Again:
                 pass
@@ -590,6 +618,39 @@ class MainController:
                 cmd = self.command_subscriber.recv_json(zmq.NOBLOCK)
                 log_info("CONTROLLER", f"Received command: {cmd['command']}")
                 
+                # Special handling for charging mode: only process STOP commands unless we're already processing a CHARGE command
+                if self.current_state == "CHARGING" and cmd['command'] != 'STOP' and cmd['command'] != 'CHARGE':
+                    if cmd['command'] == 'set_state' and cmd['state'] == 'IDLE':
+                        # Allow setting to IDLE which is effectively the same as STOP
+                        log_info("CONTROLLER", "Converting set_state IDLE to STOP while in charging mode")
+                        cmd['command'] = 'STOP'  # Convert to STOP
+                    else:
+                        # Ignore all other commands while in charging mode
+                        log_info("CONTROLLER", f"Ignoring command {cmd['command']} while in charging mode - only STOP is allowed")
+                        continue
+                
+                # Handle STOP command with priority
+                if cmd['command'] == 'STOP':
+                    log_info("CONTROLLER", "STOP command received")
+                    # First send stop to the camera system
+                    self.camera_command_publisher.send_json({
+                        'command': 'STOP'
+                    })
+                    # Stop the robot
+                    self.arduino.send_command("stop")
+                    # Reset state
+                    self.current_state = "IDLE"
+                    self.target_position = None
+                    self.target_distance = None
+                    self.target_direction = None
+                    last_direction = None
+                    last_command_time = 0
+                    # Reset stored tracking position if any
+                    if hasattr(self, 'original_tracking_position'):
+                        self.original_tracking_position = None
+                    log_info("CONTROLLER", "System stopped")
+                    continue
+                    
                 if cmd['command'] == 'set_state':
                     # Don't allow state changes if we're returning to geofence
                     if self.returning_to_geofence:
@@ -604,6 +665,22 @@ class MainController:
                             'command': 'SEARCH'
                         })
                         log_info("CONTROLLER", "Sent search command to camera")
+                    
+                    elif cmd['state'] == "CHARGING":
+                        # First stop any other activity
+                        if self.current_state != "IDLE":
+                            log_info("CONTROLLER", "Stopping previous activities before charging")
+                            self.camera_command_publisher.send_json({
+                                'command': 'STOP'
+                            })
+                            time.sleep(0.5)  # Small delay to ensure stop is processed
+                            
+                        # Start charging mode
+                        self.camera_command_publisher.send_json({
+                            'command': 'CHARGE'
+                        })
+                        log_info("CONTROLLER", "Sent charge command to camera - initiating April tag detection")
+                        self.current_state = "CHARGING"  # Explicitly set state to CHARGING
                     
                     elif cmd['state'] == 'IDLE':
                         self.camera_command_publisher.send_json({
@@ -630,10 +707,34 @@ class MainController:
                     log_info("CONTROLLER", f"Updated human position: x={cmd['x_position']}, distance={cmd['distance']}")
 
                     
+                elif cmd['command'] == 'CHARGE':
+                    # Direct CHARGE command handling - start April tag detection
+                    log_info("CONTROLLER", "Direct CHARGE command received")
+                    
+                    # First stop any other activity
+                    if self.current_state != "IDLE":
+                        log_info("CONTROLLER", "Stopping previous activities before charging")
+                        self.camera_command_publisher.send_json({
+                            'command': 'STOP'
+                        })
+                        time.sleep(0.5)  # Small delay to ensure stop is processed
+                    
+                    # Send charge command to camera
+                    self.camera_command_publisher.send_json({
+                        'command': 'CHARGE'
+                    })
+                    log_info("CONTROLLER", "Sent charge command to camera - initiating April tag detection")
+                    self.current_state = "CHARGING"
+                
                 elif cmd['command'] == 'motor':
                     # Don't allow direct motor control if we're returning to geofence
                     if self.returning_to_geofence:
                         log_info("CONTROLLER", "Ignoring motor command while returning to geofence")
+                        continue
+                    
+                    # Also don't allow motor control in charging mode except for STOP
+                    if self.current_state == "CHARGING" and cmd['action'] != "stop":
+                        log_info("CONTROLLER", "Ignoring motor command in charging mode")
                         continue
                         
                     self.arduino.send_command(cmd['action'])
