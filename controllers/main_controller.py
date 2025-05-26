@@ -12,6 +12,7 @@
 import sys
 import os
 import math
+import json
 from threading import Thread
 # Add project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -81,6 +82,11 @@ class MainController:
         self.camera_command_publisher = context.socket(zmq.PUB)
         self.camera_command_publisher.bind(f"tcp://{self.config['controller']['communication']['ip']}:{self.config['camera']['communication']['command_port']}")
         log_info("CONTROLLER", f"Created camera command channel on address tcp://{self.config['controller']['communication']['ip']}:{self.config['camera']['communication']['command_port']}")
+        
+        # Create publisher for communication module to send human detection information
+        self.comm_module_publisher = context.socket(zmq.PUB)
+        self.comm_module_publisher.bind(f"tcp://localhost:{self.config['camera']['communication']['communication_module_port']}")
+        log_info("CONTROLLER", f"Created communication module channel on port {self.config['camera']['communication']['communication_module_port']}")
 
     def _setup_lidar(self):
         """Start LIDAR processor in a separate thread"""
@@ -407,6 +413,28 @@ class MainController:
                         human_x_lidar = human_distance  # forward = x in LIDAR
                         human_y_lidar = human_position  # right-positive to left-positive conversion
                         #log_debug("CONTROLLER", f"Human at LIDAR coords: ({human_x_lidar:.2f}, {human_y_lidar:.2f})")
+                        
+                        # Get number of people from the camera message if available, default to 1
+                        num_people = camera_msg.get('num_people', 1)
+                        
+                        # Convert position from -10 to 10 scale to angle 0-179 degrees
+                        # -10 maps to 0 degrees (far left), 0 maps to 90 degrees (center), 10 maps to 179 degrees (far right)
+                        focus_angle = int(((human_position + 10) / 20) * 179)
+                        # Ensure angle is within valid range
+                        focus_angle = max(0, min(179, focus_angle))
+                        
+                        # Send FOUND message to communication module in two formats:
+                        # 1. Plain text format as specified: "FOUND [NUM_PEOPLE] [FOCUS_ANGLE]"
+                        found_msg = f"FOUND {num_people} {focus_angle}"
+                        log_info("CONTROLLER", f"Publishing to comm module: {found_msg}")
+                        self.comm_module_publisher.send_string(found_msg)
+                        
+                        # 2. JSON format for more robust parsing
+                        self.comm_module_publisher.send_json({
+                            'found': True,
+                            'num_people': num_people,
+                            'focus_angle': focus_angle
+                        })
 
 
                         # Check if we are close to the target
@@ -414,9 +442,33 @@ class MainController:
                             # We are close to the target, stop arduino, change state and stop camera
                             self.arduino.send_command("found")
                             self.current_state = "IDLE"
+                            
+                            # Send a final FOUND message before stopping
+                            # Get number of people from the camera message if available, default to 1
+                            num_people = camera_msg.get('num_people', 1)
+                            
+                            # Calculate focus angle
+                            focus_angle = int(((self.target_position + 10) / 20) * 179)
+                            focus_angle = max(0, min(179, focus_angle))
+                            
+                            # Send final FOUND with focus angle centered since we're very close
+                            found_msg = f"FOUND {num_people} {focus_angle}"
+                            log_info("CONTROLLER", f"Final approach - Publishing to comm module: {found_msg}")
+                            self.comm_module_publisher.send_string(found_msg)
+                            
+                            # Also send as JSON
+                            self.comm_module_publisher.send_json({
+                                'found': True,
+                                'num_people': num_people,
+                                'focus_angle': focus_angle,
+                                'final_approach': True
+                            })
+                            
+                            # Stop camera tracking
                             self.camera_command_publisher.send_json({
                                 'command': 'STOP'
                             })
+                            
                             # Clear the target direction and distance
                             self.target_position = None
                             self.target_distance = None

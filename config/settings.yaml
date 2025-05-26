@@ -68,6 +68,7 @@ camera:
     tracking_port: 5558
     video_port: 5559
     command_port: 5557
+    communication_module_port: 5561
 
 controller:
   communication:
