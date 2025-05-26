@@ -90,15 +90,15 @@ gps:
   geofence:
     enabled: true
     # Path to the geofence JSON file (polygon coordinates)
-    geofence_file: "config/geofence.json"
+    geofence_file: "config/geofenceBovisa.json"
     # Warning distance from fence boundary in meters
     warning_distance: 10
     
   # Mock GPS simulation settings
   mock_settings:
     # Starting position (same as geofence center by default)
-    start_lat: 40.785091
-    start_lon: -73.968285
+    start_lat: 9.1658324
+    start_lon: 45.5056258
     # Max random movement per update (in degrees)
     max_movement: 0.0001
     # Simulate GPS issues occasionally

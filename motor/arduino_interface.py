@@ -93,10 +93,10 @@ class ArduinoInterface:
             # Convert string to bytes
             string_bytes = command_string.encode('utf-8')
             # Send the bytes over serial
-            log_debug("ARDUINO", f"Sending serial bytes: {list(string_bytes)}")
+            #log_debug("ARDUINO", f"Sending serial bytes: {list(string_bytes)}")
             self.serial.write(string_bytes)
             self.serial.flush()
-            log_info("ARDUINO", f"Sent string: '{text}' to Arduino on port {self.port}")
+            #log_info("ARDUINO", f"Sent string: '{text}' to Arduino on port {self.port}")
         except Exception as e:
             log_error("ARDUINO", f"Error sending string data: {e}")
 

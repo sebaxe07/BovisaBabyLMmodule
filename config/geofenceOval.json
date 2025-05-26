@@ -1,0 +1,36 @@
+{
+    "type": "Polygon",
+    "name": "Default Geofence",
+    "description": "A polygon-based geofence boundary",
+    "coordinates": [
+        [
+            9.1653121,
+            45.5056682
+        ],
+        [
+            9.1654643,
+            45.5053784
+        ],
+        [
+            9.16622,
+            45.5055432
+        ],
+        [
+            9.1660698,
+            45.5058611
+        ],
+        [
+            9.1653121,
+            45.5056682
+        ]
+    ],
+    "center": [
+        40.785091,
+        -73.968285
+    ],
+    "properties": {
+        "color": "#ff0000",
+        "fillColor": "#ff6666",
+        "fillOpacity": 0.2
+    }
+}
