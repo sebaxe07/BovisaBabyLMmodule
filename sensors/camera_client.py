@@ -1157,8 +1157,31 @@ class CameraClient:
                         cv2.polylines(display_frame, [corners.astype(np.int32).reshape((-1, 1, 2))], True, (0, 255, 0), 2)
                         cv2.circle(display_frame, (int(center[0]), int(center[1])), 5, (0, 0, 255), -1)
                         
-                        # Calculate x position
-                        x_position = self.cal_x_of_obj([center[0]-50, center[1]-50, center[0]+50, center[1]+50], frame_width)
+                        # Calculate base x position
+                        base_x_position = self.cal_x_of_obj([center[0]-50, center[1]-50, center[0]+50, center[1]+50], frame_width)
+                        
+                        # Apply different positioning strategies based on tag ID
+                        x_position = base_x_position  # Default positioning
+                        
+                        # Tag ID 0: Center alignment (default)
+                        if tag_id == 0:
+                            # Use the default positioning - center of the tag
+                            x_position_text = "center alignment"
+                        # Tag ID 1: Align with right side of tag
+                        elif tag_id == 1:
+                            # Calculate a position that puts the tag on the right side of the robot's view
+                            # This shifts the target position to the left by ~3-5 units (out of 10)
+                            x_position = base_x_position - 4.0
+                            x_position_text = "right side alignment"
+                        # Tag ID 2: Align with left side of tag
+                        elif tag_id == 2:
+                            # Calculate a position that puts the tag on the left side of the robot's view
+                            # This shifts the target position to the right by ~3-5 units (out of 10)
+                            x_position = base_x_position + 4.0
+                            x_position_text = "left side alignment"
+                        
+                        # Ensure x_position stays within bounds -10 to 10
+                        x_position = max(-10, min(10, x_position))
                         
                         # Save the tag we're tracking
                         if self.tag_id is None:
@@ -1179,6 +1202,11 @@ class CameraClient:
                         cv2.putText(display_frame, f"Tag {tag_id}: {smoothed_distance:.2f}m", 
                                 (int(center[0]), int(center[1] - 20)), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                        
+                        # Add alignment strategy annotation
+                        cv2.putText(display_frame, f"Alignment: {x_position_text}", 
+                                (10, 150), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
                                 
                         # Send position message
                         message = {

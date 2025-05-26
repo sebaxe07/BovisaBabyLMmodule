@@ -414,8 +414,18 @@ class MainController:
                         self.current_state = "CHARGING"
                         self.target_position = camera_msg['x_position']
                         self.target_distance = camera_msg['distance']
+                        tag_id = camera_msg.get('tag_id', 0)  # Get the tag ID, default to 0 if not present
                         
-                        log_info("CONTROLLER", f"Charging station found at position: {self.target_position:.2f}, distance: {self.target_distance:.2f}m")
+                        # Define alignment strategy based on tag ID
+                        alignment_strategy = "center"
+                        if tag_id == 1:
+                            alignment_strategy = "right side"
+                        elif tag_id == 2:
+                            alignment_strategy = "left side"
+                            
+                        # Log the detection with tag ID and alignment strategy
+                        log_info("CONTROLLER", f"Charging station (Tag ID: {tag_id}, {alignment_strategy} alignment) " +
+                                f"found at position: {self.target_position:.2f}, distance: {self.target_distance:.2f}m")
                         
                         # Send position command to arduino using analog position value (-10 to 10)
                         self.arduino.send_command(self.target_position)

@@ -83,6 +83,9 @@ gps:
   port: "/dev/ttyAMA0"  # The serial port for real GPS (typical for Raspberry Pi)
   baud_rate: 38400  # Default baud rate for NEO-M8N
   update_rate: 1.0  # Update frequency in seconds
+  charging_station: # Long, Lat coordinates for docking
+    - [9.1658816, 45.5058084]
+
   communication:
     port: 5560      # Port for GPS data publication
   
