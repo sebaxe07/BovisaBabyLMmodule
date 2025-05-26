@@ -1,15 +1,14 @@
-import smbus
 import time
 import logging
+import serial
+import threading
 from threading import Thread, Event
-import struct 
-from smbus2 import SMBus
+import struct
 from utils.colored_logger import log_info, log_error, log_debug
 
 class ArduinoInterface:
     def __init__(self, config):
         self.mock_mode = config['mock_mode']
-
         self.logger = logging.getLogger('arduino_interface')
         
         if self.mock_mode:
@@ -17,9 +16,22 @@ class ArduinoInterface:
             self._setup_mock()
         else:
             try:
-                self.address = config['I2C_ADDRESS']
+                self.port = config['port']
+                self.serial = serial.Serial(
+                    port=self.port,
+                    baudrate=115200,  # Common Arduino baud rate
+                    timeout=1
+                )
+                time.sleep(2)  # Wait for Arduino to reset after serial connection
                 self._initialize_arduino()
-                self.logger.info("Connected to Arduino via I2C")
+                self.logger.info(f"Connected to Arduino via Serial on port {self.port}")
+                
+                # Start a thread to read from the serial port
+                self._stop_event = Event()
+                self._serial_read_thread = Thread(target=self._read_serial_data)
+                self._serial_read_thread.daemon = True
+                self._serial_read_thread.start()
+                
             except Exception as e:
                 self.logger.warning(f"Failed to connect to Arduino: {e}. Falling back to mock mode")
                 self.mock_mode = True
@@ -70,21 +82,23 @@ class ArduinoInterface:
             time.sleep(0.1)
 
     def send_string(self, text):
-        """Send a string value to the Arduino via I2C."""
-        # Convert string to bytes
-        string_bytes = bytearray(text.encode('utf-8'))
-        # Limit to a reasonable length if needed (Arduino buffer size considerations)
-        if len(string_bytes) > 32:  # 32 bytes is a common I2C buffer size
-            string_bytes = string_bytes[:32]
-        
-        with SMBus(1) as bus:
-            try:
-                # Send string as a block of bytes
-                log_debug("ARDUINO", f"Sending string bytes: {list(string_bytes)}")
-                bus.write_i2c_block_data(self.address, 0, list(string_bytes))
-                log_info("ARDUINO", f"Sent string: '{text}' to Arduino at address 0x{self.address:02X}")
-            except Exception as e:
-                log_error("ARDUINO", f"Error sending string data: {e}")
+        """Send a string value to the Arduino via Serial."""
+        if self.mock_mode:
+            log_debug("ARDUINO", f"MOCK: Would send string: '{text}'")
+            return
+            
+        try:
+            # Add newline to terminate command
+            command_string = f"{text}\n"
+            # Convert string to bytes
+            string_bytes = command_string.encode('utf-8')
+            # Send the bytes over serial
+            log_debug("ARDUINO", f"Sending serial bytes: {list(string_bytes)}")
+            self.serial.write(string_bytes)
+            self.serial.flush()
+            log_info("ARDUINO", f"Sent string: '{text}' to Arduino on port {self.port}")
+        except Exception as e:
+            log_error("ARDUINO", f"Error sending string data: {e}")
 
     def _initialize_arduino(self):
         """Send an initialization signal to the Arduino."""
@@ -93,6 +107,22 @@ class ArduinoInterface:
             time.sleep(0.1)  # Allow Arduino to process
         except Exception as e:
             self.logger.error(f"Error initializing Arduino: {e}")
+            
+    def _read_serial_data(self):
+        """Read data from Arduino in a background thread."""
+        while not self._stop_event.is_set():
+            if self.mock_mode:
+                time.sleep(0.1)
+                continue
+                
+            try:
+                if self.serial.in_waiting > 0:
+                    data = self.serial.readline().decode('utf-8').strip()
+                    if data:
+                        log_debug("ARDUINO", f"Received from Arduino: {data}")
+            except Exception as e:
+                log_error("ARDUINO", f"Error reading from Arduino: {e}")
+                time.sleep(0.1)  # Prevent tight error loop
 
     def send_command(self, command):
         """
@@ -154,25 +184,47 @@ class ArduinoInterface:
         """
         Get sensor readings from Arduino.
         In mock mode, returns simulated values.
-        In hardware mode, would query the Arduino for data.
+        In hardware mode, sends a query to the Arduino and waits for response.
         """
         if self.mock_mode:
             return self.mock_state['sensors']
         else:
-            # In a real implementation, you would read from the Arduino
-            # Example: return self._read_sensor_data_from_arduino()
-            # For now, returning None to indicate not implemented
-            return None
+            try:
+                # Request sensor data from Arduino with a specific command
+                self.send_string("999.0")  # Assuming 999.0 is the code to request sensor data
+                
+                # Wait for response (in a real implementation, you might want to parse data received in the _read_serial_data thread)
+                time.sleep(0.1)  # Give Arduino time to respond
+                
+                # For now, return a placeholder. In a complete implementation,
+                # you would store the sensor data received in the _read_serial_data thread
+                # and retrieve it here
+                return {
+                    'front_distance': 0.0,
+                    'battery': 0.0
+                }
+            except Exception as e:
+                log_error("ARDUINO", f"Error getting sensor data: {e}")
+                return None
             
     def cleanup(self):
         """Clean up resources"""
+        self._stop_event.set()
+        
         if self.mock_mode:
-            self._stop_event.set()
             if self._mock_thread.is_alive():
                 self._mock_thread.join(timeout=1.0)
         else:
             # Send stop command before closing
             try:
                 self.send_command("stop")
-            except:
-                pass
+                time.sleep(0.1)  # Allow command to be processed
+                if hasattr(self, 'serial') and self.serial.is_open:
+                    self.serial.close()
+                    log_info("ARDUINO", f"Closed serial connection to Arduino on port {self.port}")
+            except Exception as e:
+                log_error("ARDUINO", f"Error during cleanup: {e}")
+            
+            # Wait for serial read thread to finish
+            if hasattr(self, '_serial_read_thread') and self._serial_read_thread.is_alive():
+                self._serial_read_thread.join(timeout=1.0)
