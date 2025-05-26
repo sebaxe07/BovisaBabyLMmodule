@@ -179,34 +179,6 @@ class ArduinoInterface:
         else:
             log_error("ARDUINO", f"Unsupported command type: {type(command)}. Ignoring.")
 
-           
-    def get_sensor_data(self):
-        """
-        Get sensor readings from Arduino.
-        In mock mode, returns simulated values.
-        In hardware mode, sends a query to the Arduino and waits for response.
-        """
-        if self.mock_mode:
-            return self.mock_state['sensors']
-        else:
-            try:
-                # Request sensor data from Arduino with a specific command
-                self.send_string("999.0")  # Assuming 999.0 is the code to request sensor data
-                
-                # Wait for response (in a real implementation, you might want to parse data received in the _read_serial_data thread)
-                time.sleep(0.1)  # Give Arduino time to respond
-                
-                # For now, return a placeholder. In a complete implementation,
-                # you would store the sensor data received in the _read_serial_data thread
-                # and retrieve it here
-                return {
-                    'front_distance': 0.0,
-                    'battery': 0.0
-                }
-            except Exception as e:
-                log_error("ARDUINO", f"Error getting sensor data: {e}")
-                return None
-            
     def cleanup(self):
         """Clean up resources"""
         self._stop_event.set()

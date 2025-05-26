@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import zmq
 import time
 from motor.arduino_interface import ArduinoInterface
+from motor.multi_arduino_interface import ArduinoManager
 from sensors.lidar_processor import LidarProcessor
 from sensors.gps_processor import GpsProcessor
 from utils.colored_logger import log_info, log_error, log_debug
@@ -27,7 +28,12 @@ class MainController:
     def __init__(self, config):
         log_info("CONTROLLER", "Initializing main controller")
         self.config = config
-        self.arduino = ArduinoInterface(config['arduino'])
+        
+        # Initialize all Arduino interfaces
+        self.arduino_manager = ArduinoManager(config)
+        # For backward compatibility
+        self.arduino = self.arduino_manager.motor_arduino
+        
         self._setup_communication()
         self._setup_lidar()
         self._setup_gps()
@@ -656,13 +662,12 @@ class MainController:
             except Exception as e:
                 log_error("CONTROLLER", f"Error stopping GPS: {e}")
         
-        if hasattr(self, 'arduino'):
+        if hasattr(self, 'arduino_manager'):
             try:
-                self.arduino.send_command("stop")
-                self.arduino.cleanup()
-                log_info("CONTROLLER", "Arduino stopped")
+                self.arduino_manager.cleanup()
+                log_info("CONTROLLER", "All Arduino interfaces stopped")
             except Exception as e:
-                log_error("CONTROLLER", f"Error stopping Arduino: {e}")
+                log_error("CONTROLLER", f"Error stopping Arduino interfaces: {e}")
 
 if __name__ == "__main__":
     import yaml

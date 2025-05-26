@@ -1,7 +1,7 @@
 # config/settings.yaml
 lidar:
   mock_mode: false  # Changed to true since USB devices aren't detected
-  port: "/dev/ttyUSB0"
+  port: "/dev/ttyLIDAR"  # Using the persistent symlink for LIDAR
   safety_distance: 1 # meters
   update_rate: 10 # Hz
   scan_interval: 0.1 # seconds
@@ -18,12 +18,23 @@ lidar:
 arduino:
   port: "/dev/ttyMOTOR" 
   mock_mode: false
+  baudrate: 115200
   mock_settings:
     battery_initial: 12.0  # volts
     battery_drain_rate: 0.0001  # volts/update
     motor_forward_speed: 75  # percentage
     motor_reverse_speed: -75  # percentage
     motor_turn_speed: 50  # percentage
+
+arduino_sensor:
+  port: "/dev/ttySENSE"
+  mock_mode: false
+  baudrate: 115200
+  
+arduino_power:
+  port: "/dev/ttyPOWER"
+  mock_mode: true
+  baudrate: 115200
 
 robot:
   max_speed: 0.5 # m/s
