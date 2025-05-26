@@ -40,6 +40,7 @@ class CameraClient:
         self.current_fps = 0  # Current smoothed FPS
         self.last_fps_log = 0  # Time of last FPS log
         log_info("CAMERA", f"Target FPS: {self.target_fps}, Streaming FPS: {self.streaming_fps}")
+        self.focal_length = config['focal_length']
         
         # Frame processing thread events
         self.stream_event = Event()
@@ -349,7 +350,7 @@ class CameraClient:
             _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
 
             # Send the frame with metadata
-            print(f"Sending frame timestamp {int(time.time() * 1000)}")
+            #print(f"Sending frame timestamp {int(time.time() * 1000)}")
             self.video_publisher.send_multipart([
                 b"frame",
                 buffer.tobytes(),
@@ -939,7 +940,16 @@ class CameraClient:
             # Stop tracking if it's running
             if self.running:
                 self.stop_tracking()
-                
+            
+            # Stop streaming if it's running, but don't reset the streaming flag
+            # This will prevent frame jumps when transitioning between modes
+            if self.streaming:
+                log_info("CAMERA", "Pausing streaming for charging mode")
+                # Just clear the event to stop the streaming loop without resetting the flag
+                self.stream_event.clear()
+                if hasattr(self, 'stream_thread') and self.stream_thread:
+                    self.stream_thread.join(timeout=1.0)
+                    
             # Start charging detection
             self.charging = True
             self.status = "CHARGING"
@@ -956,6 +966,13 @@ class CameraClient:
             log_error("CAMERA", traceback.format_exc())
             self.charging = False
             self.status = "STOPPED"
+            
+            # Restart streaming if it was active before
+            if self.streaming:
+                self.stream_event.set()
+                self.stream_thread = Thread(target=self._stream_video_loop)
+                self.stream_thread.daemon = True
+                self.stream_thread.start()
     
     def stop_charging(self):
         """Stop April tag detection"""
@@ -1003,6 +1020,14 @@ class CameraClient:
         
         # Finally clear the stopping flag
         self.stopping = False
+        
+        # Restart streaming if it was active before
+        if self.streaming and not self.stream_event.is_set():
+            log_info("CAMERA", "Resuming streaming mode after charging")
+            self.stream_event.set()
+            self.stream_thread = Thread(target=self._stream_video_loop)
+            self.stream_thread.daemon = True
+            self.stream_thread.start()
         
         log_info("CAMERA", "Charging detection stopped")
 
@@ -1173,18 +1198,18 @@ class CameraClient:
                         log_info("CAMERA", "No AprilTags found")
                         self.status = "CHARGING_NOTFOUND"
                         
-                    # Reset tag tracking
-                    self.tag_id = None
-                    tag_distance_history = []
-                    
-                    # Send not found message
-                    message = {
-                        "type": "CHARGING_NOTFOUND",
-                        "x_position": 0,
-                        "distance": 0,
-                        "tag_id": 0
-                    }
-                    self.publisher.send_json(message)
+                        # Reset tag tracking
+                        self.tag_id = None
+                        tag_distance_history = []
+                        
+                        # Send not found message only when the status changes
+                        message = {
+                            "type": "CHARGING_NOTFOUND",
+                            "x_position": 0,
+                            "distance": 0,
+                            "tag_id": 0
+                        }
+                        self.publisher.send_json(message)
                 
                 # Send the frame with visualizations
                 self.send_frame(display_frame)
