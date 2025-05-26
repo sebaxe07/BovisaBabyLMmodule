@@ -55,9 +55,13 @@ class ArduinoReader:
                 if self.serial.in_waiting > 0:
                     data = self.serial.readline().decode('utf-8').strip()
                     if data:
-                        # Log all data received from the Arduino
-                        log_debug(f"ARDUINO_{self.arduino_type.upper()}", f"Received: {data}")
-                
+                        # Check if the data Starts with "Emergency" and print log_error
+                        if data.startswith("Emergency"):
+                            log_error(f"ARDUINO_{self.arduino_type.upper()}", f"Received emergency signal: {data}")
+                        else:
+                            # Log all data received from the Arduino
+                            log_debug(f"ARDUINO_{self.arduino_type.upper()}", f"Received: {data}")
+                    
             except Exception as e:
                 log_error(f"ARDUINO_{self.arduino_type.upper()}", f"Error reading from Arduino: {e}")
                 time.sleep(0.1)  # Prevent tight error loop

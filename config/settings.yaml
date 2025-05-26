@@ -64,14 +64,14 @@ camera:
   target_fps: 20  # Target FPS to maintain for consistent performance
   streaming_fps: 30  # Target FPS when in streaming mode (not tracking)
   communication:
-    ip: "192.168.1.50"
+    ip: "192.168.138.102"
     tracking_port: 5558
     video_port: 5559
     command_port: 5557
 
 controller:
   communication:
-    ip: "192.168.1.40"
+    ip: "192.168.138.45"
     command_port: 5556
 
 visualization:

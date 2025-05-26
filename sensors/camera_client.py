@@ -77,9 +77,9 @@ class CameraClient:
        
         # Setup communication sockets
         self.command_subscriber = self.context.socket(zmq.SUB)
-        self.command_subscriber.connect(f"tcp://192.168.1.40:{self.config['communication']['command_port']}")
+        self.command_subscriber.connect(f"tcp://192.168.138.45:{self.config['communication']['command_port']}")
         self.command_subscriber.setsockopt_string(zmq.SUBSCRIBE, '')
-        log_info("CAMERA", f"Command subscriber initialized on address tcp://192.168.1.40:{self.config['communication']['command_port']}")
+        log_info("CAMERA", f"Command subscriber initialized on address tcp://192.168.138.45:{self.config['communication']['command_port']}")
         # Add synchronization delay
         time.sleep(0.5)
         log_info("CAMERA", "Waiting for publishers to be ready...")
