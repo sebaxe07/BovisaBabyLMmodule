@@ -407,7 +407,32 @@ class MainController:
                         human_x_lidar = human_distance  # forward = x in LIDAR
                         human_y_lidar = human_position  # right-positive to left-positive conversion
                         #log_debug("CONTROLLER", f"Human at LIDAR coords: ({human_x_lidar:.2f}, {human_y_lidar:.2f})")
-                    
+
+
+                        # Check if we are close to the target
+                        if self.target_distance <= self.config['camera']['close_distance']:
+                            # We are close to the target, stop arduino, change state and stop camera
+                            self.arduino.send_command("found")
+                            self.current_state = "IDLE"
+                            self.camera_command_publisher.send_json({
+                                'command': 'STOP'
+                            })
+                            # Clear the target direction and distance
+                            self.target_position = None
+                            self.target_distance = None
+                            self.target_direction = None
+                            last_direction = None
+                            last_command_time = 0
+
+                            log_info("CONTROLLER", "Stopping due to close target")
+                            continue
+                        
+
+                        
+                        # Only send command if time elapsed and direction changed
+                        self.arduino.send_command(self.target_position)
+                        log_info("CONTROLLER", f"Sent command: {self.target_position}")
+                
                     # Process charging station (April tag) tracking data
                     elif camera_msg['type'] == 'CHARGING_TRACKING':
                         not_found = False
@@ -435,31 +460,10 @@ class MainController:
                         if self.target_distance <= charging_close_distance:
                             # We are close to the charging station
                             log_info("CONTROLLER", "Close to charging station. Docking...")
-                            self.arduino.send_command("dock")  # Assuming "dock" is a special command for docking
+                            self.arduino.send_command("found")  # Assuming
                             
                             # We don't stop charging mode yet, it will continue until stopped manually
 
-
-                        # Check if we are close to the target
-                        if self.target_distance <= self.config['camera']['close_distance']:
-                            # We are close to the target, stop arduino, change state and stop camera
-                            self.arduino.send_command("found")
-                            self.current_state = "IDLE"
-                            self.camera_command_publisher.send_json({
-                                'command': 'STOP'
-                            })
-                            # Clear the target direction and distance
-                            self.target_position = None
-                            self.target_distance = None
-                            self.target_direction = None
-                            last_direction = None
-                            last_command_time = 0
-
-                            log_info("CONTROLLER", "Stopping due to close target")
-                            continue
-                        
-
-                        
                         # Only send command if time elapsed and direction changed
                         self.arduino.send_command(self.target_position)
                         log_info("CONTROLLER", f"Sent command: {self.target_position}")
