@@ -350,7 +350,7 @@ class CameraClient:
             _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
 
             # Send the frame with metadata
-            #print(f"Sending frame timestamp {int(time.time() * 1000)}")
+            print(f"Sending frame timestamp {int(time.time() * 1000)}")
             self.video_publisher.send_multipart([
                 b"frame",
                 buffer.tobytes(),
