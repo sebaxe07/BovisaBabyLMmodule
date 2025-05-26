@@ -447,10 +447,14 @@ class MainController:
                             alignment_strategy = "right side"
                         elif tag_id == 2:
                             alignment_strategy = "left side"
-                            
-                        # Log the detection with tag ID and alignment strategy
-                        log_info("CONTROLLER", f"Charging station (Tag ID: {tag_id}, {alignment_strategy} alignment) " +
-                                f"found at position: {self.target_position:.2f}, distance: {self.target_distance:.2f}m")
+                        
+                        # Only log once in a while to reduce console spam
+                        current_time = time.time()
+                        if not hasattr(self, 'last_charging_log_time') or current_time - self.last_charging_log_time > 1.0:
+                            # Log the detection with tag ID and alignment strategy
+                            log_info("CONTROLLER", f"Charging station (Tag ID: {tag_id}, {alignment_strategy} alignment) " +
+                                    f"found at position: {self.target_position:.2f}, distance: {self.target_distance:.2f}m")
+                            self.last_charging_log_time = current_time
                         
                         # Send position command to arduino using analog position value (-10 to 10)
                         self.arduino.send_command(self.target_position)
@@ -463,10 +467,6 @@ class MainController:
                             self.arduino.send_command("found")  # Assuming
                             
                             # We don't stop charging mode yet, it will continue until stopped manually
-
-                        # Only send command if time elapsed and direction changed
-                        self.arduino.send_command(self.target_position)
-                        log_info("CONTROLLER", f"Sent command: {self.target_position}")
                 
                     elif camera_msg['type'] == 'NOTFOUND' and not not_found:
                         # We lost track of the human or not found
@@ -681,13 +681,24 @@ class MainController:
                         log_info("CONTROLLER", "Sent search command to camera")
                     
                     elif cmd['state'] == "CHARGING":
-                        # First stop any other activity
+                        # First stop any other activity completely
                         if self.current_state != "IDLE":
                             log_info("CONTROLLER", "Stopping previous activities before charging")
+                            # Stop the robot first to prevent movement during transition
+                            self.arduino.send_command("stop")
+                            
+                            # Send stop command to camera
                             self.camera_command_publisher.send_json({
                                 'command': 'STOP'
                             })
-                            time.sleep(0.5)  # Small delay to ensure stop is processed
+                            
+                            # Reset tracking state variables
+                            self.target_position = None
+                            self.target_distance = None 
+                            self.target_direction = None
+                            
+                            # Allow sufficient time for the camera system to process the stop command
+                            time.sleep(1.0)  # Increased delay to ensure stop is fully processed
                             
                         # Start charging mode
                         self.camera_command_publisher.send_json({
@@ -695,6 +706,9 @@ class MainController:
                         })
                         log_info("CONTROLLER", "Sent charge command to camera - initiating April tag detection")
                         self.current_state = "CHARGING"  # Explicitly set state to CHARGING
+                        
+                        # Small delay after mode change to allow systems to stabilize
+                        time.sleep(0.5)
                     
                     elif cmd['state'] == 'IDLE':
                         self.camera_command_publisher.send_json({
@@ -725,13 +739,24 @@ class MainController:
                     # Direct CHARGE command handling - start April tag detection
                     log_info("CONTROLLER", "Direct CHARGE command received")
                     
-                    # First stop any other activity
+                    # First stop any other activity completely
                     if self.current_state != "IDLE":
                         log_info("CONTROLLER", "Stopping previous activities before charging")
+                        # Stop the robot first to prevent movement during transition
+                        self.arduino.send_command("stop")
+                        
+                        # Send stop command to camera
                         self.camera_command_publisher.send_json({
                             'command': 'STOP'
                         })
-                        time.sleep(0.5)  # Small delay to ensure stop is processed
+                        
+                        # Reset tracking state variables
+                        self.target_position = None
+                        self.target_distance = None 
+                        self.target_direction = None
+                        
+                        # Allow sufficient time for the camera system to process the stop command
+                        time.sleep(1.0)  # Increased delay to ensure stop is fully processed
                     
                     # Send charge command to camera
                     self.camera_command_publisher.send_json({
@@ -739,6 +764,9 @@ class MainController:
                     })
                     log_info("CONTROLLER", "Sent charge command to camera - initiating April tag detection")
                     self.current_state = "CHARGING"
+                    
+                    # Small delay after mode change to allow systems to stabilize
+                    time.sleep(0.5)
                 
                 elif cmd['command'] == 'motor':
                     # Don't allow direct motor control if we're returning to geofence

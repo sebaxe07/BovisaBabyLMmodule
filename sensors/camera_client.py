@@ -937,9 +937,26 @@ class CameraClient:
         log_info("CAMERA", "Starting April tag detection for charging")
         
         try:
-            # Stop tracking if it's running
+            # Wait a moment to let any pending messages be processed
+            time.sleep(0.2)
+            
+            # Stop tracking if it's running - do this gracefully with proper cleanup
             if self.running:
+                log_info("CAMERA", "Stopping tracking before starting charging mode")
+                # First send a few STOPPED messages to ensure the controller stops movement
+                for _ in range(3):
+                    stop_message = {
+                        "type": "STOPPED",
+                        "x_position": 0,
+                        "distance": 0,
+                        "human_id": 0
+                    }
+                    self.publisher.send_json(stop_message)
+                    time.sleep(0.02)
+                # Then stop the tracking thread
                 self.stop_tracking()
+                # Small delay to ensure tracking is fully stopped
+                time.sleep(0.1)
             
             # Stop streaming if it's running, but don't reset the streaming flag
             # This will prevent frame jumps when transitioning between modes
@@ -1070,6 +1087,10 @@ class CameraClient:
         # Initialize distance smoothing for tags
         tag_distance_history = []
         max_history = 5
+        
+        # Rate limiting for sending messages
+        last_message_time = 0
+        message_interval = 0.1  # Send messages at max 10Hz (every 100ms)
         
         while self.charging_event.is_set():
             try:
@@ -1208,17 +1229,20 @@ class CameraClient:
                                 (10, 150), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
                                 
-                        # Send position message
-                        message = {
-                            "type": "CHARGING_TRACKING",
-                            "x_position": x_position,
-                            "distance": smoothed_distance,
-                            "tag_id": tag_id
-                        }
-                        
-                        # Only send the tracking message if we're not in the process of stopping
-                        if not self.stopping:
-                            self.publisher.send_json(message)
+                        # Send position message (with rate limiting)
+                        current_time = time.time()
+                        if current_time - last_message_time >= message_interval:
+                            message = {
+                                "type": "CHARGING_TRACKING",
+                                "x_position": x_position,
+                                "distance": smoothed_distance,
+                                "tag_id": tag_id
+                            }
+                            
+                            # Only send the tracking message if we're not in the process of stopping
+                            if not self.stopping:
+                                self.publisher.send_json(message)
+                                last_message_time = current_time
                     
                 else:
                     # No tags found
@@ -1238,6 +1262,7 @@ class CameraClient:
                             "tag_id": 0
                         }
                         self.publisher.send_json(message)
+                        last_message_time = time.time()  # Reset message timer
                 
                 # Send the frame with visualizations
                 self.send_frame(display_frame)
