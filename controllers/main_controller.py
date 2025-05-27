@@ -85,7 +85,7 @@ class MainController:
         
         # Create publisher for communication module to send human detection information
         self.comm_module_publisher = context.socket(zmq.PUB)
-        self.comm_module_publisher.bind(f"tcp://192.168.138.31:{self.config['camera']['communication']['communication_module_port']}")
+        self.comm_module_publisher.bind(f"tcp://localhost:{self.config['camera']['communication']['communication_module_port']}")
         log_info("CONTROLLER", f"Created communication module channel on address tcp://192.168.138.31:{self.config['camera']['communication']['communication_module_port']}")
 
     def _setup_lidar(self):

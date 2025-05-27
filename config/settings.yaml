@@ -48,6 +48,7 @@ camera:
   port: "/dev/video0"
   tolerance: 1 # meters
   close_distance: 1 # meters
+  charging_close_distance: 0.5 # meters
   focal_length: 406.19
   known_height: 1.94
   colors:

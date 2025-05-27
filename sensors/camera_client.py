@@ -1203,6 +1203,8 @@ class CameraClient:
                         
                         # Ensure x_position stays within bounds -10 to 10
                         x_position = max(-10, min(10, x_position))
+                        # Make sure the value is float
+                        x_position = float(x_position)
                         
                         # Save the tag we're tracking
                         if self.tag_id is None:
