@@ -33,8 +33,8 @@ arduino_sensor:
   
 arduino_power:
   port: "/dev/ttyPOWER"
-  mock_mode: true
-  baudrate: 115200
+  mock_mode: false
+  baudrate: 9600
 
 robot:
   max_speed: 0.5 # m/s
@@ -48,8 +48,8 @@ camera:
   port: "/dev/video0"
   tolerance: 1 # meters
   close_distance: 1 # meters
-  focal_length: 378.81
-  known_height: 1.51
+  focal_length: 406.19
+  known_height: 1.94
   colors:
     - [255, 0, 0]    # Red
     - [0, 255, 0]    # Green

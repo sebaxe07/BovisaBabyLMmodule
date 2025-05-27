@@ -157,11 +157,12 @@ class ArduinoInterface:
         elif isinstance(command, str):
             command_map = {
                 "stop": 100.0,
-                "found": 101.0,
-                "left": 102.0,
-                "right": 103.0,
-                "forward": 104.0,
-                "backward": 105.0,
+                "forward": 101.0,
+                "backward": 102.0,
+                "left": 103.0,
+                "right": 104.0,
+                "found": 105.0,
+                "dock": 106.0,
             }
             command = command_map.get(command.lower(), 100.0)  # Default to stop if invalid
             command_str = f"{command:.2f}"

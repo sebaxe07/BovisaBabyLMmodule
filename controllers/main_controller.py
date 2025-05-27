@@ -85,8 +85,8 @@ class MainController:
         
         # Create publisher for communication module to send human detection information
         self.comm_module_publisher = context.socket(zmq.PUB)
-        self.comm_module_publisher.bind(f"tcp://localhost:{self.config['camera']['communication']['communication_module_port']}")
-        log_info("CONTROLLER", f"Created communication module channel on port {self.config['camera']['communication']['communication_module_port']}")
+        self.comm_module_publisher.bind(f"tcp://192.168.138.31:{self.config['camera']['communication']['communication_module_port']}")
+        log_info("CONTROLLER", f"Created communication module channel on address tcp://192.168.138.31:{self.config['camera']['communication']['communication_module_port']}")
 
     def _setup_lidar(self):
         """Start LIDAR processor in a separate thread"""
@@ -500,6 +500,10 @@ class MainController:
                         elif tag_id == 2:
                             alignment_strategy = "left side"
                         
+                        # Store the last alignment strategy and tag position for recovery if tracking is lost
+                        self.last_alignment_strategy = alignment_strategy
+                        self.last_tag_id = tag_id
+                        
                         # Only log once in a while to reduce console spam
                         current_time = time.time()
                         if not hasattr(self, 'last_charging_log_time') or current_time - self.last_charging_log_time > 1.0:
@@ -512,13 +516,27 @@ class MainController:
                         self.arduino.send_command(self.target_position)
                         
                         # Check if we are close to the charging station
-                        charging_close_distance = self.config.get('camera', {}).get('charging_close_distance', 0.5)  # Default to 0.5m if not specified
+                        charging_close_distance = self.config['camera']['charging_close_distance']
                         if self.target_distance <= charging_close_distance:
                             # We are close to the charging station
                             log_info("CONTROLLER", "Close to charging station. Docking...")
-                            self.arduino.send_command("found")  # Assuming
+                            self.arduino.send_command("dock")  # Send dock command
                             
-                            # We don't stop charging mode yet, it will continue until stopped manually
+                            # Stop charging mode and transition to IDLE
+                            log_info("CONTROLLER", "Docking complete, stopping charging mode and transitioning to IDLE")
+                            self.current_state = "IDLE"
+                            
+                            # Stop camera tracking
+                            self.camera_command_publisher.send_json({
+                                'command': 'STOP'
+                            })
+                            
+                            # Clear tracking variables
+                            self.target_position = None
+                            self.target_distance = None
+                            self.target_direction = None
+                            last_direction = None
+                            last_command_time = 0
                 
                     elif camera_msg['type'] == 'NOTFOUND' and not not_found:
                         # We lost track of the human or not found
@@ -536,9 +554,60 @@ class MainController:
                     elif camera_msg['type'] == 'CHARGING_NOTFOUND' and self.current_state == "CHARGING":
                         # Lost track of charging station but stay in charging mode
                         log_info("CONTROLLER", "Lost track of charging station, searching...")
-                        # We stay in CHARGING state but stop moving to avoid collisions
-                        self.arduino.send_command("stop")
-                        # Could implement a search pattern here if needed
+                        
+                        # Check if we have both last position and alignment strategy information
+                        has_position = hasattr(self, 'target_position') and self.target_position is not None
+                        has_alignment = hasattr(self, 'last_alignment_strategy') and self.last_alignment_strategy is not None
+                        has_tag_id = hasattr(self, 'last_tag_id')
+                        
+                        # Define border thresholds (positions close to edge of frame)
+                        edge_threshold = 8.0  # Values between -10 and 10, so 8+ is close to edge
+                        
+                        if has_position:
+                            # First check based on position - if we're at an extreme edge, that takes priority
+                            if self.target_position >= edge_threshold:
+                                # Tag was last seen on the far right, send left command to find it
+                                log_info("CONTROLLER", f"Tag was last seen on the right edge (pos: {self.target_position:.2f}), moving left to find it")
+                                self.arduino.send_command("left")
+                            elif self.target_position <= -edge_threshold:
+                                # Tag was last seen on the far left, send right command to find it
+                                log_info("CONTROLLER", f"Tag was last seen on the left edge (pos: {self.target_position:.2f}), moving right to find it")
+                                self.arduino.send_command("right")
+                            # If not at an edge, but we have alignment information, use that
+                            elif has_alignment:
+                                if self.last_alignment_strategy == "right side":
+                                    # For right side alignment (tag ID 1), we want to move left
+                                    log_info("CONTROLLER", f"Lost tag with right alignment (ID:{self.last_tag_id if has_tag_id else 'unknown'}), moving left to find it")
+                                    self.arduino.send_command("left")
+                                elif self.last_alignment_strategy == "left side":
+                                    # For left side alignment (tag ID 2), we want to move right
+                                    log_info("CONTROLLER", f"Lost tag with left alignment (ID:{self.last_tag_id if has_tag_id else 'unknown'}), moving right to find it")
+                                    self.arduino.send_command("right")
+                                else:
+                                    # Center alignment, just stop
+                                    log_info("CONTROLLER", f"Lost centered tag, stopping to wait for reappearance")
+                                    self.arduino.send_command("stop")
+                            else:
+                                # Tag was not at edge and no alignment strategy available
+                                log_info("CONTROLLER", f"Tag was last seen at position {self.target_position:.2f}, stopping")
+                                self.arduino.send_command("stop")
+                        else:
+                            # No last position available, check if we have alignment info
+                            if has_alignment:
+                                if self.last_alignment_strategy == "right side":
+                                    log_info("CONTROLLER", "No position data but last alignment was right side, moving left")
+                                    self.arduino.send_command("left")
+                                elif self.last_alignment_strategy == "left side":
+                                    log_info("CONTROLLER", "No position data but last alignment was left side, moving right")
+                                    self.arduino.send_command("right")
+                                else:
+                                    log_info("CONTROLLER", "No position data and center alignment, stopping")
+                                    self.arduino.send_command("stop")
+                            else:
+                                # No position or alignment data, just stop moving to avoid collisions
+                                log_info("CONTROLLER", "No position or alignment data, stopping movement")
+                                self.arduino.send_command("stop")
+                        # We stay in CHARGING state to continue looking for the tag
 
             except zmq.Again:
                 pass
