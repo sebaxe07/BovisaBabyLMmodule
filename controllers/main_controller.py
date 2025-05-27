@@ -561,27 +561,27 @@ class MainController:
                         has_tag_id = hasattr(self, 'last_tag_id')
                         
                         # Define border thresholds (positions close to edge of frame)
-                        edge_threshold = 8.0  # Values between -10 and 10, so 8+ is close to edge
+                        edge_threshold = 1.0  # Values between -10 and 10, so 8+ is close to edge
                         
                         if has_position:
                             # First check based on position - if we're at an extreme edge, that takes priority
-                            if self.target_position >= edge_threshold:
+                            if self.target_position <= -edge_threshold and self.last_alignment_strategy == "left side":
                                 # Tag was last seen on the far right, send left command to find it
-                                log_info("CONTROLLER", f"Tag was last seen on the right edge (pos: {self.target_position:.2f}), moving left to find it")
+                                log_info("CONTROLLER", f"Tag was last seen on the left edge (pos: {self.target_position:.2f}), moving left to find it")
                                 self.arduino.send_command("left")
-                            elif self.target_position <= -edge_threshold:
+                            elif self.target_position >= edge_threshold and self.last_alignment_strategy == "right side":
                                 # Tag was last seen on the far left, send right command to find it
-                                log_info("CONTROLLER", f"Tag was last seen on the left edge (pos: {self.target_position:.2f}), moving right to find it")
+                                log_info("CONTROLLER", f"Tag was last seen on the right edge (pos: {self.target_position:.2f}), moving right to find it")
                                 self.arduino.send_command("right")
                             # If not at an edge, but we have alignment information, use that
                             elif has_alignment:
                                 if self.last_alignment_strategy == "right side":
                                     # For right side alignment (tag ID 1), we want to move left
-                                    log_info("CONTROLLER", f"Lost tag with right alignment (ID:{self.last_tag_id if has_tag_id else 'unknown'}), moving left to find it")
+                                    log_info("CONTROLLER", f"Lost tag with right alignment (ID:{self.last_tag_id if has_tag_id else 'unknown'}), at pos: {self.target_position:.2f} moving left to find it")
                                     self.arduino.send_command("left")
                                 elif self.last_alignment_strategy == "left side":
                                     # For left side alignment (tag ID 2), we want to move right
-                                    log_info("CONTROLLER", f"Lost tag with left alignment (ID:{self.last_tag_id if has_tag_id else 'unknown'}), moving right to find it")
+                                    log_info("CONTROLLER", f"Lost tag with left alignment (ID:{self.last_tag_id if has_tag_id else 'unknown'}), at pos: {self.target_position:.2f} moving right to find it")
                                     self.arduino.send_command("right")
                                 else:
                                     # Center alignment, just stop

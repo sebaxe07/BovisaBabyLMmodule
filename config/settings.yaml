@@ -28,7 +28,7 @@ arduino:
 
 arduino_sensor:
   port: "/dev/ttySENSE"
-  mock_mode: false
+  mock_mode: true
   baudrate: 115200
   
 arduino_power:
