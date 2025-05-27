@@ -1203,8 +1203,6 @@ class CameraClient:
                         
                         # Ensure x_position stays within bounds -10 to 10
                         x_position = max(-10, min(10, x_position))
-                        # Make sure the value is float
-                        x_position = float(x_position)
                         
                         # Save the tag we're tracking
                         if self.tag_id is None:
@@ -1247,25 +1245,25 @@ class CameraClient:
                                 last_message_time = current_time
                     
                 else:
-                    # # No tags found
-                    # if self.status != "CHARGING_NOTFOUND":
-                    log_info("CAMERA", "No AprilTags found")
-                    self.status = "CHARGING_NOTFOUND"
-                    
-                    # Reset tag tracking
-                    self.tag_id = None
-                    tag_distance_history = []
-                    
-                    # Send not found message only when the status changes
-                    message = {
-                        "type": "CHARGING_NOTFOUND",
-                        "x_position": 0,
-                        "distance": 0,
-                        "tag_id": 0
-                    }
-                    self.publisher.send_json(message)
-                    last_message_time = time.time()  # Reset message timer
-            
+                    # No tags found
+                    if self.status != "CHARGING_NOTFOUND":
+                        log_info("CAMERA", "No AprilTags found")
+                        self.status = "CHARGING_NOTFOUND"
+                        
+                        # Reset tag tracking
+                        self.tag_id = None
+                        tag_distance_history = []
+                        
+                        # Send not found message only when the status changes
+                        message = {
+                            "type": "CHARGING_NOTFOUND",
+                            "x_position": 0,
+                            "distance": 0,
+                            "tag_id": 0
+                        }
+                        self.publisher.send_json(message)
+                        last_message_time = time.time()  # Reset message timer
+                
                 # Send the frame with visualizations
                 self.send_frame(display_frame)
                 
